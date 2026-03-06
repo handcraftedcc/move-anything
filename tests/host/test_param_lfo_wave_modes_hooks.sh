@@ -20,6 +20,14 @@ if ! rg -q 'strcmp\(key, "phase"\)' "$file"; then
   echo "FAIL: phase parameter handler is missing" >&2
   exit 1
 fi
+if ! rg -q 'waveform_rate_multiplier' "$file"; then
+  echo "FAIL: waveform rate multiplier helper is missing" >&2
+  exit 1
+fi
+if ! rg -q 'inst->rate_hz \* waveform_rate_multiplier\(inst\)' "$file"; then
+  echo "FAIL: phase increment is not scaled by waveform rate multiplier" >&2
+  exit 1
+fi
 if ! rg -q '"key\\":\\"waveform\\"' "$file" || ! rg -q 'random' "$file" || ! rg -q 'drunk' "$file"; then
   echo "FAIL: chain params missing random/drunk waveform options" >&2
   exit 1
@@ -37,4 +45,4 @@ if ! rg -q '"key": "phase"' "$meta"; then
   exit 1
 fi
 
-echo "PASS: param_lfo phase/random/drunk hooks are present"
+echo "PASS: param_lfo phase/random/drunk hooks and drunk rate scaling are present"

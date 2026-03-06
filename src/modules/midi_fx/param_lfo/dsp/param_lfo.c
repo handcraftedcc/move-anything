@@ -167,6 +167,18 @@ static void reset_phase(param_lfo_instance_t *inst) {
     inst->phase = 0.0f;
 }
 
+static float waveform_rate_multiplier(const param_lfo_instance_t *inst) {
+    if (!inst) return 1.0f;
+
+    if (inst->waveform == WAVE_DRUNK) {
+        /* Keep low rates familiar, but make full-rate drunk movement much faster. */
+        const float norm = clampf(inst->rate_hz / 20.0f, 0.0f, 1.0f);
+        return 1.0f + (3.0f * norm);
+    }
+
+    return 1.0f;
+}
+
 static float compute_lfo_sample(const param_lfo_instance_t *inst) {
     if (!inst) return 0.0f;
 
@@ -338,7 +350,8 @@ static int param_lfo_tick(void *instance,
 
     float sample = compute_lfo_sample(inst);
 
-    float phase_inc = inst->rate_hz * ((float)frames / (float)sample_rate);
+    float phase_inc = (inst->rate_hz * waveform_rate_multiplier(inst)) *
+                      ((float)frames / (float)sample_rate);
     float new_phase = inst->phase + phase_inc;
     int wraps = (int)floorf(new_phase);
     inst->phase = wrap_phase(new_phase);
