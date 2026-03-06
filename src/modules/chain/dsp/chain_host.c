@@ -4290,7 +4290,14 @@ static int chain_mod_emit_value(void *ctx,
         mod_signal = (signal + 1.0f) * 0.5f;
     }
 
-    entry->contribution = (mod_signal * depth) + offset;
+    /* Scale source depth/offset by target parameter range so a depth of 1.0
+     * has meaningful effect on large-range params (e.g. 0..127). */
+    float range_span = entry->max_val - entry->min_val;
+    if (range_span <= 0.0f) {
+        range_span = 1.0f;
+    }
+    float range_scale = bipolar ? (0.5f * range_span) : range_span;
+    entry->contribution = ((mod_signal * depth) + offset) * range_scale;
     chain_mod_apply_effective_value(inst, entry);
     return 0;
 }
