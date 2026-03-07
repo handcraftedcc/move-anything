@@ -335,6 +335,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "param_lfo",
+      "name": "Param LFO",
+      "description": "3-lane parameter modulation LFO with free/sync rates, target mapping, and retrigger control",
+      "author": "move-anything contributors",
+      "component_type": "midi_fx",
+      "github_repo": "handcraftedcc/move-anything-paramlfo",
+      "default_branch": "main",
+      "asset_name": "param_lfo-midi_fx-module.tar.gz",
+      "min_host_version": "0.7.6"
+    },
+    {
       "id": "granny",
       "name": "Granny",
       "description": "Granular sample instrument with scan controls and file browser",
