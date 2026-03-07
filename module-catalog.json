@@ -343,7 +343,7 @@
       "github_repo": "handcraftedcc/move-anything-paramlfo",
       "default_branch": "main",
       "asset_name": "param_lfo-midi_fx-module.tar.gz",
-      "min_host_version": "0.7.6"
+      "min_host_version": "0.7.10"
     },
     {
       "id": "granny",
