@@ -35,13 +35,14 @@
           "params": [
             { "key": "lfo1_enable", "name": "Enable", "type": "enum", "options": ["off", "on"], "default": 0 },
             { "key": "lfo1_waveform", "name": "Wave", "type": "enum", "options": ["sine", "triangle", "square", "saw_up", "random", "drunk"], "default": 0 },
+            { "key": "lfo1_rate_mode", "name": "Rate Mode", "type": "enum", "options": ["free", "sync"], "default": 0 },
             { "key": "lfo1_rate_hz", "name": "Rate", "type": "float", "min": 0.01, "max": 20.0, "default": 1.0, "step": 0.01 },
             { "key": "lfo1_phase", "name": "Phase", "type": "float", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.01 },
             { "key": "lfo1_depth", "name": "Depth", "type": "float", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01 },
             { "key": "lfo1_offset", "name": "Offset", "type": "float", "min": -1.0, "max": 1.0, "default": 0.0, "step": 0.01 },
             { "key": "lfo1_polarity", "name": "Polarity", "type": "enum", "options": ["bipolar", "unipolar"], "default": 0 },
             { "key": "lfo1_retrigger", "name": "Retrigger", "type": "enum", "options": ["off", "on"], "default": 0 },
-            { "key": "lfo1_target_component", "name": "Target Comp", "type": "module_picker", "allow_none": true, "allow_self": false },
+            { "key": "lfo1_target_component", "name": "Target Comp", "type": "module_picker", "allow_none": true, "allow_self": false, "param_key": "lfo1_target_param" },
             { "key": "lfo1_target_param", "name": "Target Param", "type": "parameter_picker", "target_key": "lfo1_target_component", "numeric_only": true, "allow_none": true }
           ],
           "knobs": ["lfo1_enable", "lfo1_waveform", "lfo1_rate_hz", "lfo1_phase", "lfo1_depth", "lfo1_offset", "lfo1_polarity", "lfo1_retrigger"]
@@ -51,13 +52,14 @@
           "params": [
             { "key": "lfo2_enable", "name": "Enable", "type": "enum", "options": ["off", "on"], "default": 0 },
             { "key": "lfo2_waveform", "name": "Wave", "type": "enum", "options": ["sine", "triangle", "square", "saw_up", "random", "drunk"], "default": 0 },
+            { "key": "lfo2_rate_mode", "name": "Rate Mode", "type": "enum", "options": ["free", "sync"], "default": 0 },
             { "key": "lfo2_rate_hz", "name": "Rate", "type": "float", "min": 0.01, "max": 20.0, "default": 1.0, "step": 0.01 },
             { "key": "lfo2_phase", "name": "Phase", "type": "float", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.01 },
             { "key": "lfo2_depth", "name": "Depth", "type": "float", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01 },
             { "key": "lfo2_offset", "name": "Offset", "type": "float", "min": -1.0, "max": 1.0, "default": 0.0, "step": 0.01 },
             { "key": "lfo2_polarity", "name": "Polarity", "type": "enum", "options": ["bipolar", "unipolar"], "default": 0 },
             { "key": "lfo2_retrigger", "name": "Retrigger", "type": "enum", "options": ["off", "on"], "default": 0 },
-            { "key": "lfo2_target_component", "name": "Target Comp", "type": "module_picker", "allow_none": true, "allow_self": false },
+            { "key": "lfo2_target_component", "name": "Target Comp", "type": "module_picker", "allow_none": true, "allow_self": false, "param_key": "lfo2_target_param" },
             { "key": "lfo2_target_param", "name": "Target Param", "type": "parameter_picker", "target_key": "lfo2_target_component", "numeric_only": true, "allow_none": true }
           ],
           "knobs": ["lfo2_enable", "lfo2_waveform", "lfo2_rate_hz", "lfo2_phase", "lfo2_depth", "lfo2_offset", "lfo2_polarity", "lfo2_retrigger"]
@@ -67,13 +69,14 @@
           "params": [
             { "key": "lfo3_enable", "name": "Enable", "type": "enum", "options": ["off", "on"], "default": 0 },
             { "key": "lfo3_waveform", "name": "Wave", "type": "enum", "options": ["sine", "triangle", "square", "saw_up", "random", "drunk"], "default": 0 },
+            { "key": "lfo3_rate_mode", "name": "Rate Mode", "type": "enum", "options": ["free", "sync"], "default": 0 },
             { "key": "lfo3_rate_hz", "name": "Rate", "type": "float", "min": 0.01, "max": 20.0, "default": 1.0, "step": 0.01 },
             { "key": "lfo3_phase", "name": "Phase", "type": "float", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.01 },
             { "key": "lfo3_depth", "name": "Depth", "type": "float", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01 },
             { "key": "lfo3_offset", "name": "Offset", "type": "float", "min": -1.0, "max": 1.0, "default": 0.0, "step": 0.01 },
             { "key": "lfo3_polarity", "name": "Polarity", "type": "enum", "options": ["bipolar", "unipolar"], "default": 0 },
             { "key": "lfo3_retrigger", "name": "Retrigger", "type": "enum", "options": ["off", "on"], "default": 0 },
-            { "key": "lfo3_target_component", "name": "Target Comp", "type": "module_picker", "allow_none": true, "allow_self": false },
+            { "key": "lfo3_target_component", "name": "Target Comp", "type": "module_picker", "allow_none": true, "allow_self": false, "param_key": "lfo3_target_param" },
             { "key": "lfo3_target_param", "name": "Target Param", "type": "parameter_picker", "target_key": "lfo3_target_component", "numeric_only": true, "allow_none": true }
           ],
           "knobs": ["lfo3_enable", "lfo3_waveform", "lfo3_rate_hz", "lfo3_phase", "lfo3_depth", "lfo3_offset", "lfo3_polarity", "lfo3_retrigger"]

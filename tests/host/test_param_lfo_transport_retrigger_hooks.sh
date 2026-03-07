@@ -3,7 +3,7 @@ set -euo pipefail
 
 file="src/modules/midi_fx/param_lfo/dsp/param_lfo.c"
 
-if ! rg -q 'status == 0xFA \|\| status == 0xFC' "$file"; then
+if ! rg -q 'status == 0xFA .*status == 0xFC' "$file"; then
   echo "FAIL: missing MIDI start/stop phase reset handling" >&2
   exit 1
 fi

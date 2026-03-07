@@ -29,11 +29,18 @@ typedef enum {
     WAVE_DRUNK
 } lfo_waveform_t;
 
+typedef enum {
+    RATE_MODE_FREE = 0,
+    RATE_MODE_SYNC
+} lfo_rate_mode_t;
+
 typedef struct {
     lfo_waveform_t waveform;
+    lfo_rate_mode_t rate_mode;
     float phase;
     float phase_offset;
     float rate_hz;
+    int sync_division;
     float depth;
     float offset;
     int bipolar;
@@ -52,11 +59,22 @@ typedef struct {
     param_lfo_lane_t lanes[PARAM_LFO_COUNT];
     uint8_t held_notes[128];
     int held_count;
+    int transport_running;
 } param_lfo_instance_t;
 
 static const host_api_v1_t *g_host = NULL;
 
 /* === PARAM_LFO_SHARED_BEGIN === */
+
+#define SYNC_DIV_COUNT 10
+static const char *k_sync_division_names[SYNC_DIV_COUNT] = {
+    "8 bars", "4 bars", "2 bars", "1/1", "1/2",
+    "1/4", "1/8", "1/16", "1/32", "1/64"
+};
+static const float k_sync_division_clocks[SYNC_DIV_COUNT] = {
+    768.0f, 384.0f, 192.0f, 96.0f, 48.0f,
+    24.0f, 12.0f, 6.0f, 3.0f, 1.5f
+};
 
 static float clampf(float value, float min_val, float max_val) {
     if (value < min_val) return min_val;
@@ -145,6 +163,54 @@ static int parse_toggle(const char *val, int fallback) {
         return 0;
     }
     return fallback;
+}
+
+static lfo_rate_mode_t parse_rate_mode(const char *val, lfo_rate_mode_t fallback) {
+    if (!val || !val[0]) return fallback;
+
+    if (strcmp(val, "free") == 0 || strcmp(val, "hz") == 0 || strcmp(val, "0") == 0) {
+        return RATE_MODE_FREE;
+    }
+    if (strcmp(val, "sync") == 0 || strcmp(val, "clock") == 0 || strcmp(val, "1") == 0) {
+        return RATE_MODE_SYNC;
+    }
+    return fallback;
+}
+
+static const char *rate_mode_to_string(lfo_rate_mode_t mode) {
+    return (mode == RATE_MODE_SYNC) ? "sync" : "free";
+}
+
+static int parse_sync_division(const char *val, int fallback) {
+    if (!val || !val[0]) return fallback;
+
+    if (strcmp(val, "1/64s") == 0) return 9;
+
+    for (int i = 0; i < SYNC_DIV_COUNT; i++) {
+        if (strcmp(val, k_sync_division_names[i]) == 0) return i;
+    }
+
+    char *endptr = NULL;
+    long parsed = strtol(val, &endptr, 10);
+    if (endptr != val && *endptr == '\0' && parsed >= 0 && parsed < SYNC_DIV_COUNT) {
+        return (int)parsed;
+    }
+
+    return fallback;
+}
+
+static int clamp_sync_division(int idx) {
+    if (idx < 0) return 5; /* 1/4 */
+    if (idx >= SYNC_DIV_COUNT) return SYNC_DIV_COUNT - 1;
+    return idx;
+}
+
+static float sync_division_clocks(int idx) {
+    return k_sync_division_clocks[clamp_sync_division(idx)];
+}
+
+static const char *sync_division_to_string(int idx) {
+    return k_sync_division_names[clamp_sync_division(idx)];
 }
 
 static lfo_waveform_t parse_waveform(const char *val, lfo_waveform_t fallback) {
@@ -249,9 +315,11 @@ static void init_lane(param_lfo_lane_t *lane, void *instance_ptr, int lane_index
 
     memset(lane, 0, sizeof(*lane));
     lane->waveform = WAVE_SINE;
+    lane->rate_mode = RATE_MODE_FREE;
     lane->phase = 0.0f;
     lane->phase_offset = 0.0f;
     lane->rate_hz = 1.0f;
+    lane->sync_division = 5; /* 1/4 */
     lane->depth = 0.25f;
     lane->offset = 0.0f;
     lane->bipolar = 1;
@@ -324,14 +392,45 @@ static int parse_lfo_key(const char *key, int *lane_idx, const char **subkey) {
     return 1;
 }
 
+static void advance_sync_clock(param_lfo_instance_t *inst) {
+    if (!inst) return;
+
+    for (int i = 0; i < PARAM_LFO_COUNT; i++) {
+        param_lfo_lane_t *lane = &inst->lanes[i];
+        if (lane->rate_mode != RATE_MODE_SYNC) continue;
+
+        const float clocks_per_cycle = sync_division_clocks(lane->sync_division);
+        if (clocks_per_cycle <= 0.0f) continue;
+
+        const float phase_inc = 1.0f / (float)clocks_per_cycle;
+        const float new_phase = lane->phase + phase_inc;
+        const int wraps = (int)floorf(new_phase);
+        lane->phase = wrap_phase(new_phase);
+        for (int w = 0; w < wraps; w++) {
+            advance_wave_cycle_state(lane);
+        }
+    }
+}
+
 static void set_lane_param(param_lfo_lane_t *lane, const char *subkey, const char *val) {
     if (!lane || !subkey || !val) return;
 
     if (strcmp(subkey, "waveform") == 0) {
         lane->waveform = parse_waveform(val, lane->waveform);
     }
+    else if (strcmp(subkey, "rate_mode") == 0) {
+        lane->rate_mode = parse_rate_mode(val, lane->rate_mode);
+    }
     else if (strcmp(subkey, "rate_hz") == 0) {
-        lane->rate_hz = clampf((float)atof(val), 0.01f, 20.0f);
+        const int sync_div = parse_sync_division(val, -1);
+        if (sync_div >= 0) {
+            lane->sync_division = sync_div;
+        } else {
+            lane->rate_hz = clampf((float)atof(val), 0.01f, 20.0f);
+        }
+    }
+    else if (strcmp(subkey, "rate_sync") == 0) {
+        lane->sync_division = parse_sync_division(val, lane->sync_division);
     }
     else if (strcmp(subkey, "phase") == 0) {
         lane->phase_offset = clampf((float)atof(val), 0.0f, 1.0f);
@@ -377,8 +476,17 @@ static int get_lane_param(const param_lfo_lane_t *lane, const char *subkey, char
     if (strcmp(subkey, "waveform") == 0) {
         return snprintf(buf, buf_len, "%s", waveform_to_string(lane->waveform));
     }
+    if (strcmp(subkey, "rate_mode") == 0) {
+        return snprintf(buf, buf_len, "%s", rate_mode_to_string(lane->rate_mode));
+    }
     if (strcmp(subkey, "rate_hz") == 0) {
+        if (lane->rate_mode == RATE_MODE_SYNC) {
+            return snprintf(buf, buf_len, "%s", sync_division_to_string(lane->sync_division));
+        }
         return snprintf(buf, buf_len, "%.4f", lane->rate_hz);
+    }
+    if (strcmp(subkey, "rate_sync") == 0) {
+        return snprintf(buf, buf_len, "%s", sync_division_to_string(lane->sync_division));
     }
     if (strcmp(subkey, "phase") == 0) {
         return snprintf(buf, buf_len, "%.4f", lane->phase_offset);
@@ -424,8 +532,20 @@ static void apply_state_json(param_lfo_instance_t *inst, const char *json) {
             set_lane_param(lane, "waveform", text);
         }
 
+        snprintf(key, sizeof(key), "lfo%d_rate_mode", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "rate_mode", text);
+        }
+
+        snprintf(key, sizeof(key), "lfo%d_rate_sync", i + 1);
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "rate_sync", text);
+        }
+
         snprintf(key, sizeof(key), "lfo%d_rate_hz", i + 1);
-        if (json_get_float(json, key, &f)) {
+        if (json_get_string(json, key, text, sizeof(text))) {
+            set_lane_param(lane, "rate_hz", text);
+        } else if (json_get_float(json, key, &f)) {
             snprintf(val_buf, sizeof(val_buf), "%.6f", f);
             set_lane_param(lane, "rate_hz", val_buf);
         }
@@ -486,10 +606,12 @@ static int build_state_json(param_lfo_instance_t *inst, char *buf, int buf_len) 
         const int idx = i + 1;
 
         if (appendf(buf, buf_len, &off,
-                    "%s\"lfo%d_waveform\":\"%s\",\"lfo%d_rate_hz\":%.6f,\"lfo%d_phase\":%.6f,\"lfo%d_depth\":%.6f,\"lfo%d_offset\":%.6f,\"lfo%d_polarity\":\"%s\",\"lfo%d_retrigger\":\"%s\",\"lfo%d_enable\":\"%s\",\"lfo%d_target_component\":\"%s\",\"lfo%d_target_param\":\"%s\"",
+                    "%s\"lfo%d_waveform\":\"%s\",\"lfo%d_rate_mode\":\"%s\",\"lfo%d_rate_hz\":%.6f,\"lfo%d_rate_sync\":\"%s\",\"lfo%d_phase\":%.6f,\"lfo%d_depth\":%.6f,\"lfo%d_offset\":%.6f,\"lfo%d_polarity\":\"%s\",\"lfo%d_retrigger\":\"%s\",\"lfo%d_enable\":\"%s\",\"lfo%d_target_component\":\"%s\",\"lfo%d_target_param\":\"%s\"",
                     (i == 0) ? "" : ",",
                     idx, waveform_to_string(lane->waveform),
+                    idx, rate_mode_to_string(lane->rate_mode),
                     idx, lane->rate_hz,
+                    idx, sync_division_to_string(lane->sync_division),
                     idx, lane->phase_offset,
                     idx, lane->depth,
                     idx, lane->offset,
@@ -506,7 +628,7 @@ static int build_state_json(param_lfo_instance_t *inst, char *buf, int buf_len) 
     return off;
 }
 
-static int build_chain_params_json(char *buf, int buf_len) {
+static int build_chain_params_json(const param_lfo_instance_t *inst, char *buf, int buf_len) {
     int off = 0;
     int first = 1;
 
@@ -523,14 +645,19 @@ static int build_chain_params_json(char *buf, int buf_len) {
         } while (0)
 
         ADD_PARAM("{\"key\":\"lfo%d_waveform\",\"name\":\"Wave\",\"type\":\"enum\",\"options\":[\"sine\",\"triangle\",\"square\",\"saw_up\",\"random\",\"drunk\"],\"default\":0}", idx);
-        ADD_PARAM("{\"key\":\"lfo%d_rate_hz\",\"name\":\"Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_rate_mode\",\"name\":\"Rate Mode\",\"type\":\"enum\",\"options\":[\"free\",\"sync\"],\"default\":0}", idx);
+        if (inst && inst->lanes[i].rate_mode == RATE_MODE_SYNC) {
+            ADD_PARAM("{\"key\":\"lfo%d_rate_hz\",\"name\":\"Rate\",\"type\":\"enum\",\"options\":[\"8 bars\",\"4 bars\",\"2 bars\",\"1/1\",\"1/2\",\"1/4\",\"1/8\",\"1/16\",\"1/32\",\"1/64\"],\"default\":5}", idx);
+        } else {
+            ADD_PARAM("{\"key\":\"lfo%d_rate_hz\",\"name\":\"Rate\",\"type\":\"float\",\"min\":0.01,\"max\":20.0,\"default\":1.0,\"step\":0.01}", idx);
+        }
         ADD_PARAM("{\"key\":\"lfo%d_phase\",\"name\":\"Phase\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx);
         ADD_PARAM("{\"key\":\"lfo%d_depth\",\"name\":\"Depth\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.25,\"step\":0.01}", idx);
         ADD_PARAM("{\"key\":\"lfo%d_offset\",\"name\":\"Offset\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"default\":0.0,\"step\":0.01}", idx);
         ADD_PARAM("{\"key\":\"lfo%d_polarity\",\"name\":\"Polarity\",\"type\":\"enum\",\"options\":[\"bipolar\",\"unipolar\"],\"default\":0}", idx);
         ADD_PARAM("{\"key\":\"lfo%d_retrigger\",\"name\":\"Retrigger\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx);
         ADD_PARAM("{\"key\":\"lfo%d_enable\",\"name\":\"Enable\",\"type\":\"enum\",\"options\":[\"off\",\"on\"],\"default\":0}", idx);
-        ADD_PARAM("{\"key\":\"lfo%d_target_component\",\"name\":\"Target Comp\",\"type\":\"module_picker\",\"allow_none\":true,\"allow_self\":false}", idx);
+        ADD_PARAM("{\"key\":\"lfo%d_target_component\",\"name\":\"Target Comp\",\"type\":\"module_picker\",\"allow_none\":true,\"allow_self\":false,\"param_key\":\"lfo%d_target_param\"}", idx, idx);
         ADD_PARAM("{\"key\":\"lfo%d_target_param\",\"name\":\"Target Param\",\"type\":\"parameter_picker\",\"target_key\":\"lfo%d_target_component\",\"numeric_only\":true,\"allow_none\":true}", idx, idx);
 
 #undef ADD_PARAM
@@ -571,12 +698,17 @@ static void param_lfo_handle_midi(void *instance, const uint8_t *msg, int len) {
     const uint8_t status = msg[0];
     const uint8_t type = status & 0xF0;
 
-    /* Transport Start/Stop reset phase for deterministic sync restarts. */
-    if (status == 0xFA || status == 0xFC) {
+    /* Transport Start/Continue/Stop reset phase for deterministic sync restarts. */
+    if (status == 0xFA || status == 0xFB || status == 0xFC) {
         reset_all_phases(inst);
         if (status == 0xFC) {
+            inst->transport_running = 0;
             clear_held_notes(inst);
+        } else {
+            inst->transport_running = 1;
         }
+    } else if (status == 0xF8 && inst->transport_running) {
+        advance_sync_clock(inst);
     }
 
     /* Track held-note gate for retrigger behavior. */
@@ -607,13 +739,15 @@ static void param_lfo_step(void *instance, int frames, int sample_rate) {
 
         float sample = compute_lfo_sample(lane);
 
-        float phase_inc = (lane->rate_hz * waveform_rate_multiplier(lane)) *
-                          ((float)frames / (float)sample_rate);
-        float new_phase = lane->phase + phase_inc;
-        int wraps = (int)floorf(new_phase);
-        lane->phase = wrap_phase(new_phase);
-        for (int w = 0; w < wraps; w++) {
-            advance_wave_cycle_state(lane);
+        if (lane->rate_mode == RATE_MODE_FREE) {
+            float phase_inc = (lane->rate_hz * waveform_rate_multiplier(lane)) *
+                              ((float)frames / (float)sample_rate);
+            float new_phase = lane->phase + phase_inc;
+            int wraps = (int)floorf(new_phase);
+            lane->phase = wrap_phase(new_phase);
+            for (int w = 0; w < wraps; w++) {
+                advance_wave_cycle_state(lane);
+            }
         }
 
         int rc = g_host->mod_emit_value(g_host->mod_host_ctx,
@@ -661,7 +795,7 @@ static int param_lfo_get_param(void *instance, const char *key, char *buf, int b
     }
 
     if (strcmp(key, "chain_params") == 0) {
-        return build_chain_params_json(buf, buf_len);
+        return build_chain_params_json(inst, buf, buf_len);
     }
 
     int lane_idx = -1;
