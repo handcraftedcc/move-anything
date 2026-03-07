@@ -4979,7 +4979,10 @@ static int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                     { size_t nr = fread(json, 1, size, f); json[nr] = '\0'; }
                     int fwd_ch = -1;
                     if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
-                        if (fwd_ch >= 1 && fwd_ch <= 16) {
+                        if (fwd_ch == -2) {
+                            inst->synth_default_forward_channel = -2;  /* Passthrough (for MPE) */
+                            v2_chain_log(inst, "Synth default_forward_channel: passthrough");
+                        } else if (fwd_ch >= 1 && fwd_ch <= 16) {
                             inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
                             snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
                             v2_chain_log(inst, msg);
@@ -7570,7 +7573,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         int base_result = chain_mod_get_base_for_subkey(inst, "fx1", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
 
-        /* For ui_hierarchy: return cached JSON from module.json */
+        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 0) {
             if (inst->fx_ui_hierarchy[0][0]) {
                 int len = strlen(inst->fx_ui_hierarchy[0]);
@@ -7579,7 +7582,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     return len;
                 }
             }
-            return -1;
+            /* Cache empty - fall through to plugin get_param below */
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
@@ -7646,7 +7649,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         int base_result = chain_mod_get_base_for_subkey(inst, "fx2", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
 
-        /* For ui_hierarchy: return cached JSON from module.json */
+        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > 1) {
             if (inst->fx_ui_hierarchy[1][0]) {
                 int len = strlen(inst->fx_ui_hierarchy[1]);
@@ -7655,7 +7658,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     return len;
                 }
             }
-            return -1;
+            /* Cache empty - fall through to plugin get_param below */
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */
@@ -7721,7 +7724,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 9;
         int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx1", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
-        /* For ui_hierarchy: return cached JSON from module.json */
+        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 0) {
             if (inst->midi_fx_ui_hierarchy[0][0]) {
                 int len = strlen(inst->midi_fx_ui_hierarchy[0]);
@@ -7730,7 +7733,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     return len;
                 }
             }
-            return -1;
+            /* Cache empty - fall through to plugin get_param below */
         }
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 0) {
@@ -7787,7 +7790,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         const char *subkey = key + 9;
         int base_result = chain_mod_get_base_for_subkey(inst, "midi_fx2", subkey, buf, buf_len);
         if (base_result >= 0) return base_result;
-        /* For ui_hierarchy: return cached JSON from module.json */
+        /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > 1) {
             if (inst->midi_fx_ui_hierarchy[1][0]) {
                 int len = strlen(inst->midi_fx_ui_hierarchy[1]);
@@ -7796,7 +7799,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     return len;
                 }
             }
-            return -1;
+            /* Cache empty - fall through to plugin get_param below */
         }
         /* For chain_params: try plugin first, fall back to parsed module.json data */
         if (strcmp(subkey, "chain_params") == 0 && inst->midi_fx_count > 1) {

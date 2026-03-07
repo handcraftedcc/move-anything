@@ -20,12 +20,165 @@
 
 import { decodeDelta } from './input_filter.mjs';
 import { drawRect } from './menu_layout.mjs';
+import { announce as defaultAnnounce } from './screen_reader.mjs';
+
+/* Pad LED constants */
+const PAD_NOTE_START = 68;
+const PAD_NOTE_END = 99;
+const PAD_COLOR_WHITE = 120;
+const PAD_COLOR_HIGHLIGHT = 8;   /* BrightGreen */
+const PAD_COLOR_OFF = 0;
+const PAD_COLOR_PURPLE = 48;
+const PAD_COLOR_BLUE = 44;
+const PAD_COLOR_RED = 4;
+const PAD_COLOR_GREEN = 16;
+const MIDI_NOTE_ON = 0x90;
+/* Global pad select setting — toggled via Settings > Display > Pad Typing */
+export let padSelectGlobal = false;
+export function setPadSelectGlobal(enabled) { padSelectGlobal = !!enabled; }
+
+/* Tunable pad entry parameters */
+export let padConfig = {
+    velocityThreshold: 31,
+    aftertouchThreshold: 2,
+    aftertouchRearm: 1,
+    slideGuardMs: 200
+};
+
+/* LED state for pad select mode */
+let currentHighlightPad = -1;    /* Currently highlighted pad note */
+let pressureFired = false;       /* True after aftertouch triggered entry, rearms below REARM */
+let padLedSnapshot = {};         /* note -> original color, for restore */
+let lastPadNote = -1;            /* Note of last pad touch */
+let pendingEntryNote = -1;       /* Pad note awaiting deferred velocity entry */
+let pendingEntryTime = 0;        /* Date.now() when deferred entry was queued */
+
+function sendPadLED(note, color) {
+    if (typeof move_midi_internal_send === 'function') {
+        move_midi_internal_send([0x09, MIDI_NOTE_ON, note, color]);
+    }
+}
+
+function snapshotPadLEDs() {
+    padLedSnapshot = {};
+    if (typeof shadow_get_pad_led_snapshot === 'function') {
+        const snap = shadow_get_pad_led_snapshot();
+        if (snap) {
+            for (let note = PAD_NOTE_START; note <= PAD_NOTE_END; note++) {
+                const color = snap[String(note)];
+                if (color !== undefined) padLedSnapshot[note] = color;
+            }
+        }
+    }
+}
+
+/* Special keys always occupy cols 3-7 of the BOTTOM pad row (row 3).
+ * Layout: [chars...] [blank] [page/purple] [space/blue] [space/blue] [del/red] [ok/green]
+ * They never move regardless of how many characters the current page has. */
+const SPECIAL_COL_START = 3;  /* First special at col 3 (after gap at col 2) */
+const SPECIAL_ROW = 3;       /* Always bottom pad row */
+
+/* Get the default LED color for a pad in the current grid layout */
+function getPadDefaultColor(padNote) {
+    const padIndex = padNote - PAD_NOTE_START;
+    const padCol = padIndex % 8;
+    const padRow = 3 - Math.floor(padIndex / 8);
+    const chars = getCurrentPageChars();
+    const charCount = chars.length;
+    const gridIndex = padRow * CHARS_PER_ROW + padCol;
+
+    /* Bottom row: remaining chars on left, specials on right */
+    if (padRow === SPECIAL_ROW) {
+        if (padCol >= SPECIAL_COL_START) {
+            const sk = padCol - SPECIAL_COL_START;
+            if (sk === 0) return PAD_COLOR_PURPLE;  /* page cycle */
+            if (sk === 1 || sk === 2) return PAD_COLOR_BLUE;  /* space */
+            if (sk === 3) return PAD_COLOR_RED;     /* delete */
+            if (sk === 4) return PAD_COLOR_GREEN;   /* ok */
+        }
+        /* Chars that fall on the bottom row */
+        if (gridIndex < charCount) return PAD_COLOR_WHITE;
+        return PAD_COLOR_OFF;
+    }
+    /* Character rows above the bottom row */
+    if (gridIndex < charCount) {
+        return PAD_COLOR_WHITE;
+    }
+    return PAD_COLOR_OFF;
+}
+
+/* Map a pad column to a special index, or -1 if not a special */
+function padColToSpecial(padCol) {
+    const sk = padCol - SPECIAL_COL_START;
+    if (sk === 0) return SPECIAL_PAGE;
+    if (sk === 1 || sk === 2) return SPECIAL_SPACE;
+    if (sk === 3) return SPECIAL_BACKSPACE;
+    if (sk === 4) return SPECIAL_CONFIRM;
+    return -1;
+}
+
+function setupPadLEDs() {
+    currentHighlightPad = -1;
+    for (let padNote = PAD_NOTE_START; padNote <= PAD_NOTE_END; padNote++) {
+        sendPadLED(padNote, getPadDefaultColor(padNote));
+    }
+}
+
+function restorePadLEDs() {
+    /* Restore snapshot colors */
+    for (let padNote = PAD_NOTE_START; padNote <= PAD_NOTE_END; padNote++) {
+        const color = padLedSnapshot[padNote] || 0;
+        sendPadLED(padNote, color);
+    }
+    currentHighlightPad = -1;
+}
+
+/* Map a pad note to the correct selectedIndex */
+function selectPadItem(padNote) {
+    const padIndex = padNote - PAD_NOTE_START;
+    const padCol = padIndex % 8;
+    const padRow = 3 - Math.floor(padIndex / 8);
+    const chars = getCurrentPageChars();
+    const charCount = chars.length;
+    const gridIndex = padRow * CHARS_PER_ROW + padCol;
+
+    /* Bottom row: specials always here */
+    if (padRow === SPECIAL_ROW) {
+        if (padCol >= SPECIAL_COL_START) {
+            const sp = padColToSpecial(padCol);
+            if (sp >= 0) state.selectedIndex = charCount + sp;
+            return;
+        }
+        if (gridIndex < charCount) {
+            state.selectedIndex = gridIndex;
+        }
+        return;
+    }
+    /* Character rows above the bottom row */
+    if (gridIndex < charCount) {
+        state.selectedIndex = gridIndex;
+    }
+}
+
+function highlightPad(padNote) {
+    if (currentHighlightPad === padNote) return;
+    /* Restore previous highlight to its default color */
+    if (currentHighlightPad >= PAD_NOTE_START) {
+        sendPadLED(currentHighlightPad, getPadDefaultColor(currentHighlightPad));
+    }
+    /* Highlight new pad */
+    if (padNote >= PAD_NOTE_START && padNote <= PAD_NOTE_END) {
+        sendPadLED(padNote, PAD_COLOR_HIGHLIGHT);
+    }
+    currentHighlightPad = padNote;
+}
 
 /* Constants */
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
 const MAX_BUFFER_LENGTH = 512;
-const PREVIEW_DURATION_TICKS = 180;  /* ~3 seconds at 60fps */
+const PREVIEW_DURATION_TICKS = 180;      /* ~3 seconds at 60fps */
+const PREVIEW_DURATION_PAD_TICKS = 60;   /* ~1 second for pad entry */
 
 /* Layout constants */
 const TITLE_Y = 2;
@@ -67,6 +220,7 @@ let state = {
     previewTimeout: 0,
     lastAction: null,      /* 'char', 'space', 'backspace' */
     lastChar: '',          /* Last character entered (for repeat) */
+    padSelect: false,      /* Enable pad-based character selection */
     onConfirm: null,
     onCancel: null,
     onAnnounce: null
@@ -80,8 +234,9 @@ let state = {
  * @param {Function} options.onConfirm - Called with final text on confirm
  * @param {Function} [options.onCancel] - Called when user cancels
  * @param {Function} [options.onAnnounce] - Screen reader announce callback
+ * @param {boolean} [options.padSelect=false] - Enable pad-based character selection
  */
-export function openTextEntry({ title = '', initialText = '', onConfirm, onCancel, onAnnounce = null }) {
+export function openTextEntry({ title = '', initialText = '', onConfirm, onCancel, onAnnounce = null, padSelect } = {}) {
     state.active = true;
     state.title = title;
     state.buffer = initialText.slice(0, MAX_BUFFER_LENGTH);
@@ -92,8 +247,16 @@ export function openTextEntry({ title = '', initialText = '', onConfirm, onCance
     state.lastAction = null;
     state.lastChar = '';
     state.onConfirm = onConfirm;
+    /* Use caller's explicit padSelect if provided, otherwise fall back to global setting */
+    state.padSelect = (padSelect !== undefined) ? !!padSelect : padSelectGlobal;
     state.onCancel = onCancel || null;
     state.onAnnounce = (typeof onAnnounce === 'function') ? onAnnounce : null;
+
+    if (state.padSelect) {
+        snapshotPadLEDs();
+        if (typeof host_pad_block === 'function') host_pad_block(1);
+        setupPadLEDs();
+    }
 
     announceTextEntry(`Text entry, ${state.title || "Edit text"}. Current text: ${getAnnounceBuffer()}. ${getSelectedLabel()} selected`);
 }
@@ -102,6 +265,10 @@ export function openTextEntry({ title = '', initialText = '', onConfirm, onCance
  * Close the text entry keyboard
  */
 export function closeTextEntry() {
+    if (state.padSelect) {
+        restorePadLEDs();
+        if (typeof host_pad_block === 'function') host_pad_block(0);
+    }
     state.active = false;
     state.onConfirm = null;
     state.onCancel = null;
@@ -125,6 +292,14 @@ export function getTextEntryBuffer() {
 }
 
 /**
+ * Update the title while text entry is active
+ * @param {string} newTitle
+ */
+export function setTextEntryTitle(newTitle) {
+    state.title = newTitle;
+}
+
+/**
  * Handle MIDI input for text entry
  * @param {Uint8Array|Array} msg - MIDI message
  * @returns {boolean} true if message was handled
@@ -135,6 +310,41 @@ export function handleTextEntryMidi(msg) {
     const status = msg[0] & 0xF0;
     const data1 = msg[1];
     const data2 = msg[2];
+
+    /* Pad press (Note On) — select, or enter if pressed hard enough */
+    if (state.padSelect && status === 0x90 && data1 >= 68 && data1 <= 99) {
+        if (data2 === 0) return true;  /* Block note-off */
+        if (state.showingPreview) {
+            state.showingPreview = false;
+            state.previewTimeout = 0;
+        }
+        /* Cancel any pending deferred entry from previous pad (slide detected) */
+        pendingEntryNote = -1;
+        lastPadNote = data1;
+        pressureFired = false;  /* Rearm aftertouch on new pad touch */
+        selectPadItem(data1);
+        highlightPad(data1);
+        if (data2 >= padConfig.velocityThreshold) {
+            /* Defer entry — tick will commit if no new pad arrives within window */
+            pendingEntryNote = data1;
+            pendingEntryTime = Date.now();
+        } else {
+            announceTextEntry(`${getSelectedLabel()} selected`);
+        }
+        return true;
+    }
+
+    /* Polyphonic aftertouch on pad — also enters if pressed harder after touch */
+    if (state.padSelect && status === 0xA0 && data1 >= 68 && data1 <= 99) {
+        if (data2 >= padConfig.aftertouchThreshold && !pressureFired) {
+            pressureFired = true;
+            selectPadItem(data1);
+            handleSelection(true);
+        } else if (data2 < padConfig.aftertouchRearm) {
+            pressureFired = false;
+        }
+        return true;
+    }
 
     /* Only handle CC messages */
     if (status !== 0xB0) return false;
@@ -201,7 +411,7 @@ export function handleTextEntryMidi(msg) {
 /**
  * Handle selection of current item
  */
-function handleSelection() {
+function handleSelection(fromPad) {
     const chars = getCurrentPageChars();
     const charCount = chars.length;
 
@@ -211,8 +421,9 @@ function handleSelection() {
         appendToBuffer(char);
         state.lastAction = 'char';
         state.lastChar = char;
-        announceTextEntry(`${char} entered, text ${getAnnounceBuffer()}`);
-        showPreview();
+        const charLabel = SYMBOL_NAMES[char] || char;
+        announceTextEntry(`${charLabel} entered, text ${getAnnounceBuffer()}`);
+        showPreview(fromPad);
     } else {
         /* Special button selected */
         const specialIndex = state.selectedIndex - charCount;
@@ -223,13 +434,14 @@ function handleSelection() {
                 /* Keep page button selected on new page */
                 const newChars = getCurrentPageChars();
                 state.selectedIndex = newChars.length + SPECIAL_PAGE;
+                if (state.padSelect) setupPadLEDs();
                 announceTextEntry(`Keyboard page ${state.page + 1}, ${getSelectedLabel()} selected`);
                 break;
             case SPECIAL_SPACE:
                 appendToBuffer(' ');
                 state.lastAction = 'space';
                 announceTextEntry(`space entered, text ${getAnnounceBuffer()}`);
-                showPreview();
+                showPreview(fromPad);
                 break;
             case SPECIAL_BACKSPACE:
                 if (state.buffer.length > 0) {
@@ -237,7 +449,7 @@ function handleSelection() {
                 }
                 state.lastAction = 'backspace';
                 announceTextEntry(`Deleted, text ${getAnnounceBuffer()}`);
-                showPreview();
+                showPreview(fromPad);
                 break;
             case SPECIAL_CONFIRM:
                 announceTextEntry(`Text entry confirmed, text ${getAnnounceBuffer()}`);
@@ -257,7 +469,8 @@ function repeatLastAction() {
     switch (state.lastAction) {
         case 'char':
             appendToBuffer(state.lastChar);
-            announceTextEntry(`${state.lastChar} entered, text ${getAnnounceBuffer()}`);
+            const repeatLabel = SYMBOL_NAMES[state.lastChar] || state.lastChar;
+            announceTextEntry(`${repeatLabel} entered, text ${getAnnounceBuffer()}`);
             break;
         case 'space':
             appendToBuffer(' ');
@@ -286,9 +499,9 @@ function appendToBuffer(char) {
 /**
  * Show the preview screen
  */
-function showPreview() {
+function showPreview(fromPad) {
     state.showingPreview = true;
-    state.previewTimeout = PREVIEW_DURATION_TICKS;
+    state.previewTimeout = fromPad ? PREVIEW_DURATION_PAD_TICKS : PREVIEW_DURATION_TICKS;
 }
 
 /**
@@ -299,17 +512,34 @@ function getCurrentPageChars() {
 }
 
 function announceTextEntry(text) {
-    if (!state.onAnnounce || !text) return;
+    if (!text) return;
+    const fn = state.onAnnounce || defaultAnnounce;
     try {
-        state.onAnnounce(text);
+        fn(text);
     } catch (e) {
         /* Never let screen reader callback errors break UI input flow. */
     }
 }
 
+/* Readable names for symbols that TTS engines skip or mangle */
+const SYMBOL_NAMES = {
+    '.': 'period', '-': 'dash', '!': 'exclamation', '@': 'at',
+    '#': 'hash', '$': 'dollar', '%': 'percent', '^': 'caret',
+    '&': 'ampersand', '*': 'asterisk', "'": 'apostrophe', '"': 'quote',
+    ';': 'semicolon', ':': 'colon', '?': 'question mark', '/': 'slash',
+    '\\': 'backslash', '<': 'less than', '>': 'greater than',
+    '(': 'open paren', ')': 'close paren', '[': 'open bracket',
+    ']': 'close bracket', '{': 'open brace', '}': 'close brace',
+    '=': 'equals', '+': 'plus', ',': 'comma', '_': 'underscore',
+    '~': 'tilde', '`': 'backtick', '|': 'pipe'
+};
+
 function getSelectedLabel() {
     const chars = getCurrentPageChars();
-    if (state.selectedIndex < chars.length) return chars[state.selectedIndex];
+    if (state.selectedIndex < chars.length) {
+        const ch = chars[state.selectedIndex];
+        return SYMBOL_NAMES[ch] || ch;
+    }
 
     const specialIndex = state.selectedIndex - chars.length;
     switch (specialIndex) {
@@ -333,6 +563,16 @@ function getAnnounceBuffer() {
  */
 export function tickTextEntry() {
     if (!state.active) return false;
+
+    /* Commit deferred velocity entry after slide guard window */
+    if (pendingEntryNote >= 0 && (Date.now() - pendingEntryTime) >= padConfig.slideGuardMs) {
+        const note = pendingEntryNote;
+        pendingEntryNote = -1;
+        if (lastPadNote === note) {
+            selectPadItem(note);
+            handleSelection(true);
+        }
+    }
 
     if (state.showingPreview && state.previewTimeout > 0) {
         state.previewTimeout--;

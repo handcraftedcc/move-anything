@@ -76,7 +76,9 @@ import {
     isTextEntryActive,
     handleTextEntryMidi,
     drawTextEntry,
-    tickTextEntry
+    tickTextEntry,
+    padSelectGlobal,
+    setPadSelectGlobal
 } from '/data/UserData/move-anything/shared/text_entry.mjs';
 
 import {
@@ -687,7 +689,8 @@ const GLOBAL_SETTINGS_SECTIONS = [
         items: [
             { key: "display_mirror", label: "Mirror Display", type: "bool" },
             { key: "overlay_knobs", label: "Overlay Knobs", type: "enum",
-              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] }
+              options: ["+Shift", "+Jog Touch", "Off", "Native"], values: [0, 1, 2, 3] },
+            { key: "pad_typing", label: "Pad Typing", type: "bool" }
         ]
     },
     {
@@ -1505,6 +1508,7 @@ function setupModuleParamShims(slot, componentKey) {
 function clearModuleParamShims() {
     delete globalThis.host_module_get_param;
     delete globalThis.host_module_set_param;
+    delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
 }
 
@@ -1968,6 +1972,7 @@ function exitOvertakeMode() {
         shadow_set_param(0, "overtake_dsp:unload", "1");
     }
     delete globalThis.host_module_set_param;
+    delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
 
     overtakeModuleLoaded = false;
@@ -2002,6 +2007,7 @@ function exitToolOvertake() {
 
     /* Clean up shims */
     delete globalThis.host_module_set_param;
+    delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
     delete globalThis.host_exit_module;
 
@@ -2123,6 +2129,20 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * compile time — if the identifier doesn't exist on globalThis when the module
          * is evaluated, it won't be found later even if added afterwards. */
         globalThis.host_module_set_param = function(key, value) {
+            if (typeof shadow_set_param === "function") {
+                return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+            }
+        };
+        /* Blocking set_param that waits for the shim to process the request.
+         * Use for critical params (e.g. file_path) that must be delivered
+         * before a subsequent get_param reads the result. In overtake mode
+         * the normal set_param is fire-and-forget, which can lose params
+         * when multiple rapid writes hit the single shared-memory slot. */
+        globalThis.host_module_set_param_blocking = function(key, value, timeoutMs) {
+            var timeout = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 500;
+            if (typeof shadow_set_param_timeout === "function") {
+                return shadow_set_param_timeout(0, "overtake_dsp:" + key, String(value), timeout);
+            }
             if (typeof shadow_set_param === "function") {
                 return shadow_set_param(0, "overtake_dsp:" + key, String(value));
             }
@@ -4155,6 +4175,31 @@ function loadBrowserPreviewConfig() {
         const config = JSON.parse(content);
         if (config.browser_preview !== undefined) {
             previewEnabled = config.browser_preview;
+        }
+    } catch (e) {}
+}
+
+function savePadTypingConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.pad_typing = padSelectGlobal;
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+}
+
+function loadPadTypingConfig() {
+    try {
+        const configPath = "/data/UserData/move-anything/shadow_config.json";
+        const content = host_read_file(configPath);
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.pad_typing !== undefined) {
+            setPadSelectGlobal(config.pad_typing);
         }
     } catch (e) {}
 }
@@ -6996,6 +7041,9 @@ function getMasterFxSettingValue(setting) {
     if (setting.key === "browser_preview") {
         return previewEnabled ? "On" : "Off";
     }
+    if (setting.key === "pad_typing") {
+        return padSelectGlobal ? "On" : "Off";
+    }
     return "-";
 }
 
@@ -7140,6 +7188,12 @@ function adjustMasterFxSetting(setting, delta) {
         previewEnabled = !previewEnabled;
         if (!previewEnabled) previewStopIfPlaying();
         saveBrowserPreviewConfig();
+        return;
+    }
+
+    if (setting.key === "pad_typing") {
+        setPadSelectGlobal(!padSelectGlobal);
+        savePadTypingConfig();
         return;
     }
 }
@@ -9641,6 +9695,7 @@ globalThis.init = function() {
     /* Load auto-update preference */
     loadAutoUpdateConfig();
     loadBrowserPreviewConfig();
+    loadPadTypingConfig();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
