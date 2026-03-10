@@ -10,6 +10,7 @@
 #define SHADOW_MIDI_TO_MOVE_DEFAULT_CAPACITY 1024u
 #define SHADOW_MIDI_TO_MOVE_PACKET_SIZE 4u
 #define SHADOW_MIDI_TO_MOVE_MODE_EXTERNAL 0x01u
+#define SHADOW_MIDI_TO_MOVE_MODE_INTERNAL 0x02u
 
 /* Monotonic indices: producers reserve via atomic fetch-add on write_idx.
  * Reader advances read_idx after successful injection.

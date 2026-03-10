@@ -1435,6 +1435,7 @@ static uint8_t shadow_external_inject_forwarded_seen[SHADOW_CHAIN_INSTANCES];
 static uint64_t shadow_external_inject_last_activity_ms = 0;
 static uint64_t shadow_external_inject_mode_seen_ms = 0;
 static int shadow_external_inject_mode_enabled = 0;
+static int shadow_internal_inject_mode_enabled = 0;
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
 static uint64_t last_speech_time_ms = 0;  /* Rate limiting for TTS */
@@ -1821,28 +1822,35 @@ static int shadow_is_external_source_mode(const char *mode)
 static void shadow_refresh_external_inject_state(void)
 {
     /* Detect quickly while disabled (startup), then back off while enabled. */
-    uint32_t probe_period = shadow_external_inject_mode_enabled ? 64u : 1u;
+    uint32_t probe_period =
+        (shadow_external_inject_mode_enabled || shadow_internal_inject_mode_enabled) ? 64u : 1u;
     if ((shadow_external_inject_probe_counter++ % probe_period) != 0u) return;
-    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) {
-        shadow_external_inject_mode_enabled = 0;
-        return;
-    }
 
     uint64_t now = now_mono_ms();
-    int enabled = 0;
+    int external_enabled = 0;
+    int internal_enabled = 0;
 
     /* Primary signal: producer sets queue mode flag directly. */
     if (shadow_midi_to_move_shm) {
         uint32_t mode_flags =
             __atomic_load_n(&shadow_midi_to_move_shm->mode_flags, __ATOMIC_ACQUIRE);
         if ((mode_flags & SHADOW_MIDI_TO_MOVE_MODE_EXTERNAL) != 0u) {
-            enabled = 1;
+            external_enabled = 1;
             shadow_external_inject_mode_seen_ms = now;
+        }
+        if ((mode_flags & SHADOW_MIDI_TO_MOVE_MODE_INTERNAL) != 0u) {
+            internal_enabled = 1;
         }
     }
 
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) {
+        shadow_external_inject_mode_enabled = external_enabled;
+        shadow_internal_inject_mode_enabled = internal_enabled;
+        return;
+    }
+
     /* Fallback for legacy producers that don't set mode_flags. */
-    if (!enabled) {
+    if (!external_enabled) {
         for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES; ++slot) {
             shadow_chain_slot_t *s = &shadow_chain_slots[slot];
             if (!s->active || !s->instance) {
@@ -1878,7 +1886,7 @@ static void shadow_refresh_external_inject_state(void)
                 continue;
             }
 
-            enabled = 1;
+            external_enabled = 1;
             shadow_external_inject_mode_seen_ms = now;
 
             char fwd_buf[32];
@@ -1899,13 +1907,19 @@ static void shadow_refresh_external_inject_state(void)
     }
 
     /* Avoid transient false negatives during chain slot transitions. */
-    if (!enabled && shadow_external_inject_mode_enabled &&
+    if (!external_enabled && shadow_external_inject_mode_enabled &&
         shadow_external_inject_mode_seen_ms > 0 &&
         (now - shadow_external_inject_mode_seen_ms) <= 2000u) {
-        enabled = 1;
+        external_enabled = 1;
     }
 
-    shadow_external_inject_mode_enabled = enabled;
+    shadow_external_inject_mode_enabled = external_enabled;
+    shadow_internal_inject_mode_enabled = internal_enabled;
+}
+
+static int shadow_inject_guard_mode_enabled(void)
+{
+    return shadow_external_inject_mode_enabled || shadow_internal_inject_mode_enabled;
 }
 
 /* Suppress high-rate internal aftertouch from Move pads.
@@ -1915,10 +1929,10 @@ static void shadow_refresh_external_inject_state(void)
 static int shadow_should_suppress_internal_aftertouch(uint8_t cin, uint8_t cable, uint8_t status)
 {
     if (cable != 0x00) return 0;  /* Only Move internal cable */
-    if (!shadow_external_inject_mode_enabled) return 0;
+    if (!shadow_inject_guard_mode_enabled()) return 0;
     if (shadow_external_inject_last_activity_ms == 0) return 0;
 
-    /* Suppress only while external-inject forwarding is actively happening. */
+    /* Suppress only while guarded forwarding is actively happening. */
     uint64_t now = now_mono_ms();
     if ((now - shadow_external_inject_last_activity_ms) > 1500u) return 0;
 
@@ -2010,7 +2024,7 @@ static int shadow_inject_midi_to_move_packet(const uint8_t pkt[4], int *insert_s
     /* In external-source injection mode, avoid adding packets when native MIDI
      * already occupies any leading slot. This prevents interleaving patterns
      * that can trip Move's event-order assertion. */
-    if (shadow_external_inject_mode_enabled && search_start > 0) {
+    if (shadow_inject_guard_mode_enabled() && search_start > 0) {
         if (dbg) dbg->chosen_pass = -2;  /* Busy/interleave guard */
         return 2;
     }
@@ -2163,7 +2177,7 @@ static void shadow_drain_midi_to_move_queue(void)
         /* Force USB cable 2 while preserving CIN in low nibble. */
         pkt[0] = (uint8_t)((2u << 4) | (pkt[0] & 0x0Fu));
 
-        if (shadow_external_inject_mode_enabled &&
+        if (shadow_inject_guard_mode_enabled() &&
             shadow_midi_in_contains_packet(global_mmap_addr + MIDI_IN_OFFSET, pkt)) {
             shadow_midi_to_move_dropped_count++;
             duplicate_drops++;

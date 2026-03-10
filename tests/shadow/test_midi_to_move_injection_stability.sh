@@ -2,6 +2,8 @@
 set -euo pipefail
 
 shim="src/move_anything_shim.c"
+inject_mod="src/modules/sound_generators/midi_inject_test/midi_inject_test.c"
+inject_shm="src/host/shadow_midi_to_move_shm.h"
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "rg is required to run this test" >&2
@@ -23,6 +25,20 @@ fi
 guard_ctx=$(sed -n '/In external-source injection mode/,/return 2;/p' "$shim")
 if ! echo "$guard_ctx" | rg -q "search_start > 0"; then
   echo "FAIL: External-inject busy guard must trigger on any non-empty prefix" >&2
+  exit 1
+fi
+
+# Internal mode parity: source mode should expose an internal guard flag too.
+if ! rg -n "SHADOW_MIDI_TO_MOVE_MODE_INTERNAL" "$inject_shm" >/dev/null 2>&1; then
+  echo "FAIL: Missing SHADOW_MIDI_TO_MOVE_MODE_INTERNAL shared mode flag" >&2
+  exit 1
+fi
+if ! rg -n "SHADOW_MIDI_TO_MOVE_MODE_INTERNAL" "$inject_mod" >/dev/null 2>&1; then
+  echo "FAIL: midi_inject_test does not publish internal mode guard flag" >&2
+  exit 1
+fi
+if ! echo "$guard_ctx" | rg -q "shadow_inject_guard_mode_enabled"; then
+  echo "FAIL: Busy guard does not apply to internal inject mode" >&2
   exit 1
 fi
 

@@ -52,6 +52,7 @@ static const host_api_v1_t *g_host = NULL;
 static int g_log_fd = -1;
 static uint32_t g_instance_count = 0;
 static uint32_t g_external_mode_instance_count = 0;
+static uint32_t g_internal_mode_instance_count = 0;
 static const char *k_log_path = "/data/UserData/move-anything/midi_inject_test.log";
 static const char *k_ui_hierarchy_json =
     "{"
@@ -156,11 +157,19 @@ static int source_mode_is_external_only(source_mode_t mode)
     return mode == SOURCE_MODE_EXTERNAL;
 }
 
-static void refresh_external_mode_flag(void)
+static int source_mode_is_internal_only(source_mode_t mode)
+{
+    return mode == SOURCE_MODE_INTERNAL;
+}
+
+static void refresh_inject_mode_flags(void)
 {
     (void)shadow_midi_to_move_set_mode_flag(
         SHADOW_MIDI_TO_MOVE_MODE_EXTERNAL,
         g_external_mode_instance_count > 0 ? 1 : 0);
+    (void)shadow_midi_to_move_set_mode_flag(
+        SHADOW_MIDI_TO_MOVE_MODE_INTERNAL,
+        g_internal_mode_instance_count > 0 ? 1 : 0);
 }
 
 static int source_is_allowed(const midi_inject_test_instance_t *inst, int source)
@@ -282,8 +291,11 @@ static void* create_instance(const char *module_dir, const char *json_defaults)
     inst->source_mode = SOURCE_MODE_EXTERNAL;
     if (source_mode_is_external_only(inst->source_mode)) {
         g_external_mode_instance_count++;
-        refresh_external_mode_flag();
     }
+    if (source_mode_is_internal_only(inst->source_mode)) {
+        g_internal_mode_instance_count++;
+    }
+    refresh_inject_mode_flags();
 
     midi_inject_logf("instance created (queue=%s, source=%s, out=Thru)",
                      opened ? "ok" : "fail",
@@ -298,8 +310,12 @@ static void destroy_instance(void *instance)
         if (source_mode_is_external_only(inst->source_mode) &&
             g_external_mode_instance_count > 0) {
             g_external_mode_instance_count--;
-            refresh_external_mode_flag();
         }
+        if (source_mode_is_internal_only(inst->source_mode) &&
+            g_internal_mode_instance_count > 0) {
+            g_internal_mode_instance_count--;
+        }
+        refresh_inject_mode_flags();
         midi_inject_logf("instance destroyed recv=%u fwd=%u drop=%u source=%u system=%u non_channel=%u aftertouch=%u self_echo=%u queue=%u",
                          inst->received_packets,
                          inst->forwarded_packets,
@@ -352,13 +368,17 @@ static void set_param(void *instance, const char *key, const char *val)
     if (strcmp(key, "source_mode") == 0) {
         source_mode_t old_mode = inst->source_mode;
         inst->source_mode = parse_source_mode(val);
-        if (source_mode_is_external_only(old_mode) != source_mode_is_external_only(inst->source_mode)) {
-            if (source_mode_is_external_only(inst->source_mode)) {
-                g_external_mode_instance_count++;
-            } else if (g_external_mode_instance_count > 0) {
+        if (source_mode_is_external_only(old_mode) != source_mode_is_external_only(inst->source_mode) ||
+            source_mode_is_internal_only(old_mode) != source_mode_is_internal_only(inst->source_mode)) {
+            if (source_mode_is_external_only(inst->source_mode)) g_external_mode_instance_count++;
+            else if (source_mode_is_external_only(old_mode) && g_external_mode_instance_count > 0)
                 g_external_mode_instance_count--;
-            }
-            refresh_external_mode_flag();
+
+            if (source_mode_is_internal_only(inst->source_mode)) g_internal_mode_instance_count++;
+            else if (source_mode_is_internal_only(old_mode) && g_internal_mode_instance_count > 0)
+                g_internal_mode_instance_count--;
+
+            refresh_inject_mode_flags();
         }
         midi_inject_logf("source mode set to %s", source_mode_to_string(inst->source_mode));
         return;

@@ -26,6 +26,25 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 - Build/deploy artifact MD5: `5014374e4aaaa56066d3b2e5b6366dbd`
 - Installed with: `./scripts/install.sh local --skip-confirmation --skip-modules`
 
+## 2026-03-10 (internal mode parity)
+
+### Evidence observed
+- `midi_inject_test` was stable in external mode after busy-prefix defer changes.
+- Crash could still occur in `source_mode=internal` (example repro: arp running while pads held).
+- Root cause: strongest shim guard checks were keyed to external mode only.
+
+### Change implemented
+- Added queue mode flag: `SHADOW_MIDI_TO_MOVE_MODE_INTERNAL` in shared-memory header.
+- `midi_inject_test` now publishes both external and internal mode flags based on current `source_mode`.
+- Shim guard activation now uses a combined guard predicate (external OR internal mode enabled), so:
+  - non-empty-prefix busy guard applies to internal mode
+  - mailbox duplicate suppression applies to internal mode
+  - internal-aftertouch suppression gate is enabled for guarded internal-forwarding windows
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh`: PASS (updated to assert internal-flag plumbing + internal guard activation)
+- Full build: PASS (`./scripts/build.sh`)
+
 ## Notes format for next entries
 - `Date`
 - `Evidence observed`
