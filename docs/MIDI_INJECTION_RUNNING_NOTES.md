@@ -298,3 +298,26 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 - Next repro should distinguish:
   - note input still arriving but MIDI-FX suppressing output, vs
   - MIDI-FX tick going silent despite recent stream activity.
+
+## 2026-03-10 (prefx source guard for midi_inject_test internal mode)
+
+### Motivation
+- Logs showed chain patch input remained `midi_input=0` (`ANY`) while `midi_inject_test` was set to `source_mode=internal`.
+- In that state, external-source traffic (`src=2`) could still reach MIDI FX (SuperArp) before being dropped later at synth forwarding.
+- This allowed external feedback to perturb internal-mode MIDI FX timing/state.
+
+### Change implemented
+- Added a pre-MIDI-FX guard in `src/modules/chain/dsp/chain_host.c` (`v2_on_midi`):
+  - if current synth is `midi_inject_test`
+  - and synth `source_mode` resolves to `internal`
+  - then drop `MOVE_MIDI_SOURCE_EXTERNAL` packets before MIDI FX processing.
+- Added targeted debug line:
+  - `v2-midi prefx block synth=... source_mode=internal src=2 status=...`
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
+- `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
+
+### Expected effect
+- In `midi_inject_test` internal mode, SuperArp should no longer see external feedback packets.
+- This should remove source-path contamination and make internal-mode behavior consistent with user intent.

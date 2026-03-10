@@ -684,6 +684,43 @@ static int v2_midi_debug_enabled(const chain_instance_t *inst)
     return strcmp(inst->current_synth_module, "midi_inject_test") == 0;
 }
 
+static int parse_midi_inject_source_mode(const char *val)
+{
+    if (!val) return 0; /* both */
+    if (strcmp(val, "internal") == 0) return 1;
+    if (strcmp(val, "external") == 0) return 2;
+    if (strcmp(val, "both") == 0) return 0;
+
+    {
+        int idx = atoi(val);
+        if (idx <= 0) return 0;
+        if (idx == 1) return 1;
+        return 2;
+    }
+}
+
+/* Query current midi_inject_test source_mode from synth plugin. */
+static int midi_inject_source_mode_internal_active(const chain_instance_t *inst)
+{
+    char mode_buf[32];
+    int ret = -1;
+
+    if (!inst) return 0;
+    if (strcmp(inst->current_synth_module, "midi_inject_test") != 0) return 0;
+
+    mode_buf[0] = '\0';
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+        ret = inst->synth_plugin_v2->get_param(inst->synth_instance, "source_mode",
+                                               mode_buf, (int)sizeof(mode_buf));
+    } else if (inst->synth_plugin && inst->synth_plugin->get_param) {
+        ret = inst->synth_plugin->get_param("source_mode", mode_buf, (int)sizeof(mode_buf));
+    }
+
+    if (ret <= 0) return 0;
+    mode_buf[sizeof(mode_buf) - 1] = '\0';
+    return parse_midi_inject_source_mode(mode_buf) == 1;
+}
+
 static void v2_midi_debug_maybe_flush(chain_instance_t *inst, uint64_t now_ms)
 {
     if (!inst) return;
@@ -6017,6 +6054,24 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
                             in_d1,
                             in_d2);
             }
+        }
+        v2_midi_debug_maybe_flush(inst, now_ms);
+        return;
+    }
+
+    /* Special-case guard: in midi_inject_test internal mode, block external-source
+     * packets before MIDI FX (e.g. superarp) so feedback traffic cannot perturb
+     * internal-only timing/state. */
+    if (source == MOVE_MIDI_SOURCE_EXTERNAL &&
+        midi_inject_source_mode_internal_active(inst)) {
+        if (debug_enabled && (in_note_edge || in_clock || in_status == 0xA0u)) {
+            unified_log("chain", LOG_LEVEL_DEBUG,
+                        "v2-midi prefx block synth=%s source_mode=internal src=%d status=0x%02X d1=%u d2=%u",
+                        inst->current_synth_module,
+                        source,
+                        in_status,
+                        in_d1,
+                        in_d2);
         }
         v2_midi_debug_maybe_flush(inst, now_ms);
         return;
