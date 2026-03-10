@@ -68,6 +68,31 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 - Added host regression test: `tests/host/test_chain_v2_midi_source_gate.sh` (PASS)
 - Existing guard test: `tests/shadow/test_midi_to_move_injection_stability.sh` (PASS)
 
+## 2026-03-10 (internal-mode dropout with external MIDI connected)
+
+### Evidence observed
+- Dropout still reproduced in `source_mode=internal` when an external MIDI device was connected.
+- Active slot config had chain `input: "both"` with `midi_inject_test` synth + `superarp` MIDI FX.
+- `midi_inject_test` logs showed `drop reason=source src=2 mode=internal`, while shim injector stayed healthy (`full=0`, `busy_drop=0`), indicating no queue starvation.
+
+### Hypothesis
+- External-source events were still entering chain MIDI FX (including `superarp`) before synth-level source filtering in `midi_inject_test`.
+- That let feedback/external stream perturb arp held-note state; once held set was cleared, output stopped even with pads held.
+
+### Change implemented
+- Added `inst_midi_inject_test_source_allowed(...)` in chain v2 path.
+- For synth module `midi_inject_test`, read synth `source_mode` and gate by source *before* MIDI FX processing:
+  - `internal` => accept only `MOVE_MIDI_SOURCE_INTERNAL`
+  - `external` => accept only `MOVE_MIDI_SOURCE_EXTERNAL`
+  - keep host-generated source allowed
+- Applied guard in `v2_on_midi` immediately after per-instance input gate.
+
+### Verification
+- Extended `tests/host/test_chain_v2_midi_source_gate.sh` to assert:
+  - new pre-MIDI-FX gate call is present
+  - helper checks `midi_inject_test` module + synth `source_mode`
+  - internal/external source rules are enforced
+
 ## Notes format for next entries
 - `Date`
 - `Evidence observed`
