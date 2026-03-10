@@ -225,3 +225,24 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 
 ### Open questions
 - During the next dropout window, do `0xFC` packets appear on cable 2 right before superarp stop/reset events?
+
+## 2026-03-10 (host probe for transport source attribution)
+
+### Evidence observed
+- Shim probe showed no `rt-stop observed ... cable=2` lines while `superarp.log` still reported `MIDI Stop (internal)`.
+- This indicates stop events were not observed on shim external-cable forwarding path in the sampled run.
+
+### Change implemented
+- Added host-level transport probe in `src/move_anything.c` to log incoming MIDI transport statuses (`0xFA/0xFB/0xFC`) with cable and dispatch source:
+  - `rt-transport midi_out ... cable=2 dispatch=external`
+  - `rt-transport midi_out ... cable=0 dispatch=internal`
+- Also logs `host_module_send_midi` transport injections (if any) for completeness.
+
+### Verification
+- Pending hardware repro with updated build to determine whether stop packets originate from:
+  - internal MIDI_OUT stream (`cable=0`) vs
+  - external feedback stream (`cable=2`) vs
+  - explicit host_module_send_midi path.
+
+### Open questions
+- Does dropout-adjacent `0xFC` show up as `dispatch=internal` (likely XMOS/internal transport) or `dispatch=external` (feedback device path)?

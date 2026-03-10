@@ -26,6 +26,7 @@
 #include "host/module_manager.h"
 #include "host/settings.h"
 #include "host/shadow_constants.h"
+#include "host/unified_log.h"
 
 int global_fd = -1;
 int global_exit_flag = 0;
@@ -672,6 +673,10 @@ int process_host_midi(unsigned char *midi, int apply_transforms) {
   }
 
   return 0;  /* Pass through */
+}
+
+static int is_transport_realtime_status(uint8_t status) {
+  return status == 0xFA || status == 0xFB || status == 0xFC;
 }
 
 int queueMidiSend(int cable, unsigned char *buffer, int length)
@@ -1506,6 +1511,11 @@ static JSValue js_host_module_send_midi(JSContext *ctx, JSValueConst this_val,
         }
     }
 
+    if (is_transport_realtime_status(msg[0])) {
+        unified_log("host", LOG_LEVEL_DEBUG,
+                    "rt-transport host_module_send_midi status=0x%02X source=%d",
+                    msg[0], source);
+    }
     mm_on_midi(&g_module_manager, msg, 3, source);
     return JS_UNDEFINED;
 }
@@ -2722,6 +2732,11 @@ int main(int argc, char *argv[])
 
             if (cable == 2)
             {
+                if (is_transport_realtime_status(byte[1])) {
+                    unified_log("host", LOG_LEVEL_DEBUG,
+                                "rt-transport midi_out status=0x%02X cable=%u dispatch=external",
+                                byte[1], cable);
+                }
                 /* External MIDI: no transforms - route to both JS and DSP */
                 /* Route to JS handler */
                 if (callGlobalFunction(&ctx, &JSonMidiMessageExternal, &byte[1])) {
@@ -2733,6 +2748,11 @@ int main(int argc, char *argv[])
 
             if (cable == 0)
             {
+                if (is_transport_realtime_status(byte[1])) {
+                    unified_log("host", LOG_LEVEL_DEBUG,
+                                "rt-transport midi_out status=0x%02X cable=%u dispatch=internal",
+                                byte[1], cable);
+                }
                 /* Process host-level shortcuts and apply transforms */
                 int consumed = 0;
 
