@@ -23,11 +23,6 @@ if ! echo "$ctx" | rg -q "inst_midi_source_allowed\\(inst, source\\)"; then
   exit 1
 fi
 
-if ! echo "$ctx" | rg -q "inst_midi_inject_test_source_allowed\\(inst, source\\)"; then
-  echo "FAIL: v2_on_midi missing midi_inject_test pre-MIDI-FX source gate call" >&2
-  exit 1
-fi
-
 helper=$(sed -n '/static int inst_midi_source_allowed/,/static void v2_on_midi/p' "$file")
 
 if ! echo "$helper" | rg -q "inst->midi_input == MIDI_INPUT_PADS"; then
@@ -42,31 +37,6 @@ fi
 
 if ! echo "$helper" | rg -q "source == MOVE_MIDI_SOURCE_HOST"; then
   echo "FAIL: helper must allow host-generated MIDI through source gate" >&2
-  exit 1
-fi
-
-if ! echo "$helper" | rg -q "strcmp\\(inst->current_synth_module, \"midi_inject_test\"\\)"; then
-  echo "FAIL: helper missing midi_inject_test module check" >&2
-  exit 1
-fi
-
-if ! echo "$helper" | rg -q "get_param\\("; then
-  echo "FAIL: helper missing synth get_param call" >&2
-  exit 1
-fi
-
-if ! echo "$helper" | rg -q "\"source_mode\""; then
-  echo "FAIL: helper missing source_mode lookup from synth instance" >&2
-  exit 1
-fi
-
-if ! echo "$helper" | rg -q "source == MOVE_MIDI_SOURCE_INTERNAL"; then
-  echo "FAIL: helper missing internal source-mode allow rule" >&2
-  exit 1
-fi
-
-if ! echo "$helper" | rg -q "source == MOVE_MIDI_SOURCE_EXTERNAL"; then
-  echo "FAIL: helper missing external source-mode allow rule" >&2
   exit 1
 fi
 

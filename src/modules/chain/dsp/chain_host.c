@@ -5721,38 +5721,6 @@ static int inst_midi_source_allowed(const chain_instance_t *inst, int source)
     return 1;
 }
 
-/* For midi_inject_test, apply source_mode before MIDI FX so external feedback
- * cannot perturb held-note/arp state while testing internal-only injection. */
-static int inst_midi_inject_test_source_allowed(const chain_instance_t *inst, int source)
-{
-    if (!inst) return 0;
-    if (source == MOVE_MIDI_SOURCE_HOST) return 1;
-
-    if (strcmp(inst->current_synth_module, "midi_inject_test") != 0) {
-        return 1;
-    }
-
-    if (!inst->synth_plugin_v2 || !inst->synth_instance || !inst->synth_plugin_v2->get_param) {
-        return 1;
-    }
-
-    char mode_buf[32];
-    int mode_len = inst->synth_plugin_v2->get_param(
-        inst->synth_instance, "source_mode", mode_buf, (int)sizeof(mode_buf));
-    if (mode_len <= 0) return 1;
-    if (mode_len >= (int)sizeof(mode_buf)) mode_len = (int)sizeof(mode_buf) - 1;
-    mode_buf[mode_len] = '\0';
-
-    if (strcmp(mode_buf, "internal") == 0 || strcmp(mode_buf, "1") == 0) {
-        return source == MOVE_MIDI_SOURCE_INTERNAL;
-    }
-    if (strcmp(mode_buf, "external") == 0 || strcmp(mode_buf, "2") == 0) {
-        return source == MOVE_MIDI_SOURCE_EXTERNAL;
-    }
-
-    return 1;
-}
-
 /* V2 on_midi handler */
 static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     chain_instance_t *inst = (chain_instance_t *)instance;
@@ -5881,7 +5849,6 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     }
 
     if (!inst_midi_source_allowed(inst, source)) return;
-    if (!inst_midi_inject_test_source_allowed(inst, source)) return;
 
     /* Process through MIDI FX modules (if any loaded) */
     uint8_t out_msgs[MIDI_FX_MAX_OUT_MSGS][3];
@@ -7052,3 +7019,4 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
         }
     }
 }
+
