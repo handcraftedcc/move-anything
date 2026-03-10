@@ -321,3 +321,35 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 ### Expected effect
 - In `midi_inject_test` internal mode, SuperArp should no longer see external feedback packets.
 - This should remove source-path contamination and make internal-mode behavior consistent with user intent.
+
+## 2026-03-10 (transport-only prefx guard after internal-mode regression)
+
+### Evidence observed
+- Hardware repro with the broad pre-FX guard showed repeated:
+  - `v2-midi prefx block synth=midi_inject_test source_mode=internal src=2 status=0xA0 ...`
+- In the same window, internal-mode playback became starved/intermittent and `v2-midi gap tick-silent ...` continued.
+- This confirmed the broad guard was over-filtering active note path traffic for this setup.
+
+### Change implemented
+- Narrowed the pre-FX guard in `src/modules/chain/dsp/chain_host.c`:
+  - keep `midi_inject_test` + `source_mode=internal` condition
+  - but only block external transport statuses `0xFA`/`0xFB`/`0xFC`
+  - no longer block all external-source MIDI events.
+- Added helper:
+  - `is_external_transport_start_stop(const uint8_t *msg, int len)`
+- Updated debug tag:
+  - `v2-midi prefx block transport ...`
+
+### Verification
+- New host test added:
+  - `tests/host/test_chain_midi_inject_prefx_guard.sh`
+  - verifies guard is transport-only and checks `0xFA/0xFB/0xFC` handling
+- Test results:
+  - `bash tests/host/test_chain_midi_inject_prefx_guard.sh` PASS
+  - `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
+  - `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
+- Deployed to hardware (`./scripts/install.sh local`, modules/assets skipped).
+
+### Current status after deploy
+- Broad `prefx block ... src=2 status=0xA0` lines are gone.
+- Internal-mode intermittency still reproduces (`v2-midi gap tick-silent ...`) and requires separate root-cause work in MIDI-FX/internal cadence path.

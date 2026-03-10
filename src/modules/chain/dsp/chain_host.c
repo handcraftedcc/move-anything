@@ -699,6 +699,12 @@ static int parse_midi_inject_source_mode(const char *val)
     }
 }
 
+static int is_external_transport_start_stop(const uint8_t *msg, int len)
+{
+    if (!msg || len <= 0) return 0;
+    return msg[0] == 0xFAu || msg[0] == 0xFBu || msg[0] == 0xFCu;
+}
+
 /* Query current midi_inject_test source_mode from synth plugin. */
 static int midi_inject_source_mode_internal_active(const chain_instance_t *inst)
 {
@@ -6059,14 +6065,14 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
         return;
     }
 
-    /* Special-case guard: in midi_inject_test internal mode, block external-source
-     * packets before MIDI FX (e.g. superarp) so feedback traffic cannot perturb
-     * internal-only timing/state. */
+    /* Special-case guard: in midi_inject_test internal mode, block external
+     * transport start/continue/stop before MIDI FX (e.g. superarp). */
     if (source == MOVE_MIDI_SOURCE_EXTERNAL &&
-        midi_inject_source_mode_internal_active(inst)) {
-        if (debug_enabled && (in_note_edge || in_clock || in_status == 0xA0u)) {
+        midi_inject_source_mode_internal_active(inst) &&
+        is_external_transport_start_stop(msg, len)) {
+        if (debug_enabled) {
             unified_log("chain", LOG_LEVEL_DEBUG,
-                        "v2-midi prefx block synth=%s source_mode=internal src=%d status=0x%02X d1=%u d2=%u",
+                        "v2-midi prefx block transport synth=%s source_mode=internal src=%d status=0x%02X d1=%u d2=%u",
                         inst->current_synth_module,
                         source,
                         in_status,
