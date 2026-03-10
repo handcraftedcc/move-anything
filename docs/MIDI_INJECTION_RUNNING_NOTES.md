@@ -318,6 +318,31 @@ Purpose: append-only notes for debugging `midi_to_move` injection stability in `
 - `tests/shadow/test_midi_to_move_injection_stability.sh` PASS
 - `bash tests/host/test_chain_v2_midi_source_gate.sh` PASS
 
+## 2026-03-10 (midi exec before no-input regression after phase move)
+
+### Evidence observed
+- After moving `Midi Exec=Before` routing to post-ioctl `MIDI_IN`, behavior changed from “still after shim” to “no input/pads not triggering”.
+- Repro held even with no MIDI FX loaded, so failure was not inside a specific MIDI FX module.
+- Shim path analysis showed routed note events were blocked on cable 0, but reinjection could be indefinitely deferred by busy-prefix guard (`search_start > 0`) when guard mode was active.
+
+### Root cause
+- `midi_exec_before` activates internal guard mode.
+- Busy-prefix guard treated internal-only before-mode like external interleave-risk mode, returning busy/defer whenever contiguous prefix was non-empty.
+- With typical mailbox occupancy, this could starve reinjection and mute note flow.
+
+### Change implemented
+- Added explicit internal-only classification + active `midi_exec_before` detection in shim injection path.
+- Kept strict busy-prefix defer for all guarded modes by default.
+- Added exception: when mode is internal-only and at least one active slot has `midi_exec_before`, allow injection (do not defer on non-empty prefix).
+
+### Verification
+- `tests/shadow/test_midi_to_move_injection_stability.sh` PASS (updated to assert internal-only + midi_exec_before exception exists).
+- `tests/host/test_chain_midi_exec_before.sh` PASS.
+- `tests/shadow/test_shadow_midi_exec_before_wiring.sh` PASS.
+- Built and installed with:
+  - `./scripts/build.sh`
+  - `./scripts/install.sh local --skip-confirmation --skip-modules`
+
 ### Expected effect
 - In `midi_inject_test` internal mode, SuperArp should no longer see external feedback packets.
 - This should remove source-path contamination and make internal-mode behavior consistent with user intent.

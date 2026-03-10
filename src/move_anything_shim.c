@@ -649,50 +649,6 @@ static void shadow_inprocess_process_midi(void) {
         }
     }
 
-    /* MIDI exec before-mode:
-     * For slots that opt in, run internal note data through chain MIDI FX before
-     * Move consumes it, then block raw cable 0 so only injected cable 2 remains. */
-    {
-        uint8_t *in_src = global_mmap_addr + MIDI_IN_OFFSET;
-        for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
-            uint8_t p0 = in_src[i];
-            uint8_t p1 = in_src[i + 1];
-            uint8_t p2 = in_src[i + 2];
-            uint8_t p3 = in_src[i + 3];
-            if (p0 == 0 && p1 == 0 && p2 == 0 && p3 == 0) continue;
-
-            uint8_t cin = p0 & 0x0F;
-            uint8_t cable = (p0 >> 4) & 0x0F;
-            uint8_t status = p1;
-            uint8_t type = status & 0xF0;
-            uint8_t midi_ch = status & 0x0F;
-
-            if (cable != 0x00) continue;
-            if (cin != 0x08 && cin != 0x09) continue;
-            if (type != 0x80 && type != 0x90) continue;
-            if (p2 < 10) continue;  /* Never route knob-touch notes through before mode. */
-
-            int dispatched = 0;
-            if (shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
-                uint8_t msg[3] = { status, p2, p3 };
-                for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
-                    shadow_chain_slot_t *slot = &shadow_chain_slots[s];
-                    if (!slot->active || !slot->instance || !slot->midi_exec_before) continue;
-                    if (slot->channel != -1 && slot->channel != (int)midi_ch) continue;
-                    shadow_plugin_v2->on_midi(slot->instance, msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
-                    dispatched = 1;
-                }
-            }
-
-            if (dispatched) {
-                in_src[i] = 0;
-                in_src[i + 1] = 0;
-                in_src[i + 2] = 0;
-                in_src[i + 3] = 0;
-            }
-        }
-    }
-
     /* MIDI_OUT → DSP: Move's track output contains only musical notes.
      * Internal controls (knob touches, step buttons) do NOT appear in MIDI_OUT.
      * The buffer is refreshed from hardware after every ioctl (post-ioctl memcpy). */
@@ -2033,6 +1989,58 @@ static uint32_t shadow_midi_in_count_occupied_slots(const uint8_t *midi_in)
     return occupied;
 }
 
+static void shadow_route_midi_exec_before_from_midi_in(uint8_t *midi_in)
+{
+    if (!midi_in || !shadow_plugin_v2 || !shadow_plugin_v2->on_midi) return;
+
+    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+        uint8_t p0 = midi_in[i];
+        uint8_t p1 = midi_in[i + 1];
+        uint8_t p2 = midi_in[i + 2];
+        uint8_t p3 = midi_in[i + 3];
+        if (p0 == 0 && p1 == 0 && p2 == 0 && p3 == 0) continue;
+
+        uint8_t cin = p0 & 0x0F;
+        uint8_t cable = (p0 >> 4) & 0x0F;
+        uint8_t status = p1;
+        uint8_t type = status & 0xF0;
+        uint8_t midi_ch = status & 0x0F;
+
+        if (cable != 0x00) continue;
+        if (cin != 0x08 && cin != 0x09) continue;
+        if (type != 0x80 && type != 0x90) continue;
+        if (p2 < 10) continue;  /* Never route knob-touch notes through before mode. */
+
+        int dispatched = 0;
+        uint8_t msg[3] = { status, p2, p3 };
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+            shadow_chain_slot_t *slot = &shadow_chain_slots[s];
+            if (!slot->active || !slot->instance || !slot->midi_exec_before) continue;
+            if (slot->channel != -1 && slot->channel != (int)midi_ch) continue;
+            shadow_plugin_v2->on_midi(slot->instance, msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
+            dispatched = 1;
+        }
+
+        if (dispatched) {
+            midi_in[i] = 0;
+            midi_in[i + 1] = 0;
+            midi_in[i + 2] = 0;
+            midi_in[i + 3] = 0;
+        }
+    }
+}
+
+static int shadow_midi_exec_before_active(void)
+{
+    for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
+        shadow_chain_slot_t *slot = &shadow_chain_slots[s];
+        if (slot->active && slot->instance && slot->midi_exec_before) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int shadow_midi_in_contains_packet(const uint8_t *midi_in, const uint8_t pkt[4])
 {
     if (!midi_in || !pkt) return 0;
@@ -2102,12 +2110,21 @@ static int shadow_inject_midi_to_move_packet(const uint8_t pkt[4], int *insert_s
         dbg->sparse_tail_slot = last_non_empty_slot;
     }
 
-    /* In external-source injection mode, avoid adding packets when native MIDI
-     * already occupies any leading slot. This prevents interleaving patterns
-     * that can trip Move's event-order assertion. */
+    /* In guarded injection modes, avoid adding packets when native MIDI already
+     * occupies a leading contiguous prefix; this prevents interleaving patterns
+     * that can trip Move's event-order assertion.
+     *
+     * Exception: in internal-only Midi Exec=Before mode we must still route
+     * transformed notes back to Move, otherwise input can starve while prefix
+     * occupancy remains non-empty. */
+    int internal_only_mode =
+        (shadow_internal_inject_mode_enabled && !shadow_external_inject_mode_enabled);
+    int midi_exec_before_active = shadow_midi_exec_before_active();
     if (shadow_inject_guard_mode_enabled() && search_start > 0) {
-        if (dbg) dbg->chosen_pass = -2;  /* Busy/interleave guard */
-        return 2;
+        if (!internal_only_mode || !midi_exec_before_active) {
+            if (dbg) dbg->chosen_pass = -2;  /* Busy/interleave guard */
+            return 2;
+        }
     }
 
     /* Prefer appending after the current tail to preserve order.
@@ -4094,6 +4111,10 @@ do_ioctl:
                 }
             }
         }
+
+        /* Apply per-slot Midi Exec=Before routing on fresh post-ioctl MIDI_IN,
+         * then block raw cable-0 notes for dispatched slots before Move reads. */
+        shadow_route_midi_exec_before_from_midi_in(sh_midi);
 
         /* === SHIFT+MENU SHORTCUT DETECTION AND BLOCKING (POST-IOCTL) ===
          * Scan hardware MIDI_IN for Shift+Menu, perform action, and block from reaching Move.

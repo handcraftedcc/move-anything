@@ -22,7 +22,7 @@ if ! rg -n "search_start = j \\+ 4" "$shim" >/dev/null 2>&1; then
 fi
 
 # External-inject safety: if contiguous prefix is non-empty, defer injection.
-guard_ctx=$(sed -n '/In external-source injection mode/,/return 2;/p' "$shim")
+guard_ctx=$(sed -n '/In guarded injection modes/,/return 2;/p' "$shim")
 if ! echo "$guard_ctx" | rg -q "search_start > 0"; then
   echo "FAIL: External-inject busy guard must trigger on any non-empty prefix" >&2
   exit 1
@@ -37,8 +37,16 @@ if ! rg -n "SHADOW_MIDI_TO_MOVE_MODE_INTERNAL" "$inject_mod" >/dev/null 2>&1; th
   echo "FAIL: midi_inject_test does not publish internal mode guard flag" >&2
   exit 1
 fi
-if ! echo "$guard_ctx" | rg -q "shadow_inject_guard_mode_enabled"; then
-  echo "FAIL: Busy guard does not apply to internal inject mode" >&2
+if ! echo "$guard_ctx" | rg -q "internal_only_mode"; then
+  echo "FAIL: Busy guard should classify internal-only mode" >&2
+  exit 1
+fi
+if ! echo "$guard_ctx" | rg -q "midi_exec_before_active"; then
+  echo "FAIL: Busy guard should include Midi Exec=Before exception in internal-only mode" >&2
+  exit 1
+fi
+if ! echo "$guard_ctx" | rg -q "!internal_only_mode || !midi_exec_before_active"; then
+  echo "FAIL: Busy guard should stay strict unless internal-only Midi Exec=Before is active" >&2
   exit 1
 fi
 
