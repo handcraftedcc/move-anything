@@ -8287,8 +8287,10 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         fill_rect(cursorX, plotY + plotH - 3, width, 2, 1);
     }
 
-    print(2, 56, truncateText(valueText, 24), 1);
-    print(2, 48, truncateText(sourceText, 24), 1);
+    drawFooter({
+        left: truncateText(valueText, 20),
+        right: truncateText(sourceText, 12)
+    });
 }
 
 function drawWavPositionPreview() {
@@ -8466,7 +8468,6 @@ function drawHierarchyEditor() {
 
         if (hierEditorEditMode && selectedMeta && selectedMeta.ui_type === "wav_position") {
             drawWavPositionEditor(selectedKey, selectedMeta);
-            drawFooter({ left: "Push: done", right: "Jog: adjust" });
             return;
         }
 
