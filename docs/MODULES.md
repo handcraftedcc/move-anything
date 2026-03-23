@@ -723,6 +723,8 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `float` | `min`, `max`, `default`/`value` | Float value |
 | `enum` | `options`, `default`/`value` | List of string options |
 | `filepath` | `root`, `start_path`, `filter`, `default`/`value` | Opens Shadow UI file browser and stores selected path |
+| `waveform_position` | `min`, `max`, `step`, `waveform_source_key` | Normalized position editor (0..1) with optional WAV preview cursor |
+| `canvas` | `canvas_script` | Opens a full-screen module-owned canvas overlay without requiring a full custom UI |
 | `module_picker` | `allow_none`, `allow_self`, `allowed_targets`, `param_key` | Dynamic enum from loaded chain components |
 | `parameter_picker` | `target_key`, `numeric_only`, `allow_none` | Dynamic enum from selected target's exposed params |
 
@@ -770,6 +772,87 @@ Behavior notes:
 - `browser_hooks` supports value placeholders: `$path`/`$selected_path` and `$filename`/`$selected_filename`.
 - For pad samplers, you can suspend auto-pad switching while browsing by adding `{"key":"ui_auto_select_pad","value":"off","restore":true}` to `browser_hooks.on_open`.
 - Example user sample file path: `/data/UserData/UserLibrary/Samples/Drums/Kick01.wav`.
+
+#### `waveform_position` + filepath pairing
+
+`waveform_position` can render a lightweight waveform preview while editing in the hierarchy editor when paired with a filepath parameter:
+
+- `waveform_source_key` (optional): key of a `filepath` parameter in the same component. When present and a WAV file is selected, the editor draws a waveform preview with a position cursor.
+- If no file is selected (or the file is unreadable), the position editor still works and shows a fallback message.
+
+Example:
+
+```json
+{
+  "key": "sample_pos",
+  "name": "Sample Pos",
+  "type": "waveform_position",
+  "min": 0.0,
+  "max": 1.0,
+  "step": 0.01,
+  "waveform_source_key": "sample_file"
+}
+```
+
+#### `canvas` module-owned overlay
+
+Use `type: "canvas"` when you want a fullscreen interactive overlay, but do not want to replace the whole module UI.
+
+- `canvas_script` (optional): Script file relative to the module folder. Defaults to `canvas.js`.
+- `canvas_script` supports a target suffix as `"<file>.js#<target>"` (example: `canvas.js#rain` or `canvas.js#createRainOverlay`).
+- `canvas_overlay` (optional): Explicit target key/function name, if you do not want to use `#target` in `canvas_script`.
+- Entering the parameter opens a dedicated canvas view.
+- Back or Main Click exits the canvas and returns to the hierarchy editor.
+
+Example:
+
+```json
+{
+  "key": "canvas_env",
+  "name": "Canvas",
+  "type": "canvas",
+  "canvas_script": "canvas.js#rain"
+}
+```
+
+The canvas script can expose:
+
+- `globalThis.canvas_overlay` (default object)
+- `globalThis.canvas_overlays.<name>` (named object)
+- `globalThis.<functionName>()` (factory returning an overlay object)
+
+An overlay object supports these optional hooks:
+
+- `onOpen(ctx, event)`
+- `onClose(ctx, event)`
+- `onExit(ctx, event)`
+- `onMidi(ctx, event)` where `event` contains `{ source, data }`
+- `tick(ctx, event)`
+- `draw(ctx, event)`
+
+`ctx` includes display helpers (`clear`, `setPixel`, `drawRect`, `fillRect`, `drawLine`, `print`) plus parameter helpers (`getValue`, `setValue`, `getParam`, `setParam`).
+
+#### Inactivity Visualizer (module.json)
+
+Modules can provide an inactivity visualizer without custom UI by adding `visualizer` metadata under `capabilities`:
+
+```json
+{
+  "capabilities": {
+    "visualizer": {
+      "script": "visualizer.js#main",
+      "timeout_sec": 12
+    }
+  }
+}
+```
+
+- `script` (required): Overlay script path relative to the module folder.
+- `script` supports `#target`, where target can be a named overlay object or factory function.
+- `overlay` (optional): Explicit target key/function name if not using `#target`.
+- `timeout_sec` (required): Seconds of hierarchy-editor inactivity before auto-open.
+- Any control input (jog/knobs/back/buttons as CC controls) closes the visualizer.
+- MIDI note input does not close it.
 
 #### Dynamic Target Pickers
 

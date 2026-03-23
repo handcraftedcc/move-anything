@@ -187,6 +187,53 @@ host_sampler_set_external_stop(bool)     // Set external stop flag for sampler
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
 `host_exit_module` is dynamically created for tool modules only — it is not available in the main host context.
 
+## Canvas Overlay Hook Contract (Hierarchy Editor)
+
+For `chain_params` entries with `type: "canvas"`, Shadow UI can load a module-owned overlay script (default `canvas.js` or `canvas_script` override in metadata).  
+`canvas_script` can be either `"file.js"` or `"file.js#target"`. `target` may point to a named overlay object or a factory function.
+
+The script should set:
+
+```javascript
+globalThis.canvas_overlay = {
+  onOpen(ctx, event) {},
+  onClose(ctx, event) {},
+  onExit(ctx, event) {},
+  onMidi(ctx, event) {},
+  tick(ctx, event) {},
+  draw(ctx, event) {}
+};
+```
+
+Also supported:
+
+```javascript
+globalThis.canvas_overlays = { rain: { /* hooks */ } };
+globalThis.createRainOverlay = function() { return { /* hooks */ }; };
+```
+
+All hooks are optional. `event` for `onMidi` includes `{ source, data }` where `source` is `"internal"` or `"external"`.
+
+## Inactivity Visualizer Hook Contract (Hierarchy Editor)
+
+For module.json `capabilities.visualizer`, Shadow UI loads the configured script after inactivity timeout while in the hierarchy editor.  
+`visualizer.script` also supports `"file.js#target"` and `visualizer.overlay` for explicit target selection.
+
+The script can export either `globalThis.visualizer_overlay` (preferred) or `globalThis.canvas_overlay` (fallback) with hooks:
+
+```javascript
+globalThis.visualizer_overlay = {
+  onOpen(ctx, event) {},
+  onClose(ctx, event) {},
+  onExit(ctx, event) {},
+  onMidi(ctx, event) {},
+  tick(ctx, event) {},
+  draw(ctx, event) {}
+};
+```
+
+Control input (jog/knobs/buttons) closes the visualizer; MIDI note input does not.
+
 ## Utility Functions
 
 ```javascript

@@ -1,0 +1,290 @@
+{
+  "id": "param-lab",
+  "name": "Param Lab",
+  "abbrev": "PL",
+  "version": "0.1.0",
+  "dsp": "dsp.so",
+  "component_type": "midi_fx",
+  "capabilities": {
+    "chainable": true,
+    "component_type": "midi_fx",
+    "visualizer": {
+      "script": "canvas.js#createRainOverlay",
+      "timeout_sec": 4
+    },
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "Param Lab",
+          "params": [
+            {
+              "key": "float_gain",
+              "label": "Float Gain",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.50,
+              "step": 0.01,
+              "callbacks": {
+                "onEnter": "cb_on_enter",
+                "onModify": "cb_on_modify",
+                "onExit": "cb_on_exit",
+                "onCancel": "cb_on_cancel"
+              }
+            },
+            {
+              "key": "int_steps",
+              "label": "Int Steps",
+              "type": "int",
+              "min": 0,
+              "max": 16,
+              "default": 8,
+              "step": 1,
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "percentage_mix",
+              "label": "Percent Mix",
+              "type": "percentage",
+              "default": 35,
+              "increment_jog": 1,
+              "increment_knob": 5,
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "enum_wave",
+              "label": "Wave",
+              "type": "enum",
+              "options": ["sine", "tri", "saw", "square"],
+              "default": "sine",
+              "wrap": true,
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "level": "timing_and_pitch",
+              "label": "Timing + Pitch"
+            },
+            {
+              "level": "advanced_types",
+              "label": "Advanced Types"
+            },
+            {
+              "key": "hide_actions_folder",
+              "label": "Hide Actions Folder",
+              "type": "boolean",
+              "default": "off",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "level": "actions_and_ui",
+              "label": "Actions + UI",
+              "conditional_display": "hide_actions_folder == false"
+            }
+          ],
+          "knobs": ["float_gain", "int_steps", "percentage_mix", "enum_wave", "hide_actions_folder"]
+        },
+        "timing_and_pitch": {
+          "name": "Timing + Pitch",
+          "params": [
+            {
+              "key": "boolean_sync",
+              "label": "Sync",
+              "type": "boolean",
+              "default": "off",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "note_root",
+              "label": "Note Root",
+              "type": "note",
+              "min": 24,
+              "max": 96,
+              "default": 60,
+              "step": 1,
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "time_div",
+              "label": "Time Div",
+              "type": "time",
+              "options": {
+                "mode": "sync",
+                "divisions": ["1/1", "1/2", "1/4", "1/8", "1/8T", "1/16", "1/32"]
+              },
+              "default": "1/8",
+              "conditional_display": "boolean_sync == true",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "bipolar_pan",
+              "label": "Bipolar Pan",
+              "type": "bipolar",
+              "min": -1.0,
+              "max": 1.0,
+              "default": 0.0,
+              "step": 0.01,
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            }
+          ],
+          "knobs": ["boolean_sync", "note_root", "time_div", "bipolar_pan"]
+        },
+        "advanced_types": {
+          "name": "Advanced Types",
+          "params": [
+            {
+              "key": "string_name",
+              "label": "String",
+              "type": "string",
+              "default": "param-lab",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "filepath_sample",
+              "label": "Filepath",
+              "type": "filepath",
+              "root": "/data/UserData",
+              "start_path": "/data/UserData/UserLibrary/Samples",
+              "filter": [".wav", ".aif"],
+              "default": "",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "waveform_position",
+              "label": "Wave Pos",
+              "type": "waveform_position",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.25,
+              "step": 0.01,
+              "waveform_source_key": "filepath_sample",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "mod_target_1",
+              "label": "Mod Target",
+              "type": "mod_target",
+              "available_targets": ["float_gain", "bipolar_pan", "sync_only_amount"],
+              "default": "float_gain",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "sync_only_amount",
+              "label": "Sync Amt",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.20,
+              "step": 0.01,
+              "conditional_display": "boolean_sync == true",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            }
+          ],
+          "knobs": ["waveform_position", "mod_target_1", "sync_only_amount"]
+        },
+        "actions_and_ui": {
+          "name": "Actions + UI",
+          "params": [
+            {
+              "key": "button_ping",
+              "label": "Button Ping",
+              "type": "button",
+              "callbacks": {
+                "onModify": "cb_button"
+              }
+            },
+            {
+              "key": "canvas_env",
+              "label": "Canvas",
+              "type": "canvas",
+              "canvas_script": "canvas.js#rotor",
+              "callbacks": {
+                "onEnter": "cb_canvas",
+                "onMidi": "cb_canvas",
+                "onExit": "cb_canvas",
+                "onCancel": "cb_canvas"
+              }
+            },
+            {
+              "key": "module_target",
+              "label": "Module Target",
+              "type": "module_picker",
+              "allow_none": true,
+              "allow_self": true,
+              "param_key": "target_param",
+              "default": "",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "target_param",
+              "label": "Target Param",
+              "type": "parameter_picker",
+              "target_key": "module_target",
+              "numeric_only": false,
+              "allow_none": true,
+              "default": "",
+              "callbacks": {
+                "onModify": "cb_on_modify"
+              }
+            },
+            {
+              "key": "last_callback",
+              "label": "Last Callback",
+              "type": "string",
+              "default": ""
+            }
+          ],
+          "knobs": ["module_target", "target_param"]
+        }
+      }
+    },
+    "chain_params": [
+      { "key": "float_gain", "name": "Float Gain", "type": "float", "min": 0.0, "max": 1.0, "default": 0.50, "step": 0.01 },
+      { "key": "int_steps", "name": "Int Steps", "type": "int", "min": 0, "max": 16, "default": 8, "step": 1 },
+      { "key": "percentage_mix", "name": "Percent Mix", "type": "percentage", "default": 35, "increment_jog": 1, "increment_knob": 5 },
+      { "key": "enum_wave", "name": "Wave", "type": "enum", "options": ["sine", "tri", "saw", "square"], "default": "sine", "wrap": true },
+      { "key": "boolean_sync", "name": "Sync", "type": "boolean", "default": "off" },
+      { "key": "hide_actions_folder", "name": "Hide Actions Folder", "type": "boolean", "default": "off" },
+      { "key": "note_root", "name": "Note Root", "type": "note", "min": 24, "max": 96, "default": 60, "step": 1 },
+      { "key": "time_div", "name": "Time Div", "type": "time", "divisions": ["1/1", "1/2", "1/4", "1/8", "1/8T", "1/16", "1/32"], "default": "1/8" },
+      { "key": "bipolar_pan", "name": "Bipolar Pan", "type": "bipolar", "min": -1.0, "max": 1.0, "default": 0.0, "step": 0.01 },
+      { "key": "string_name", "name": "String", "type": "string", "default": "param-lab" },
+      { "key": "filepath_sample", "name": "Filepath", "type": "filepath", "root": "/data/UserData", "start_path": "/data/UserData/UserLibrary/Samples", "filter": [".wav", ".aif"], "default": "" },
+      { "key": "waveform_position", "name": "Wave Pos", "type": "waveform_position", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01, "waveform_source_key": "filepath_sample" },
+      { "key": "mod_target_1", "name": "Mod Target", "type": "mod_target", "available_targets": ["float_gain", "bipolar_pan", "sync_only_amount"], "default": "float_gain" },
+      { "key": "button_ping", "name": "Button Ping", "type": "button" },
+      { "key": "canvas_env", "name": "Canvas", "type": "canvas", "canvas_script": "canvas.js#rotor" },
+      { "key": "module_target", "name": "Module Target", "type": "module_picker", "allow_none": true, "allow_self": true, "param_key": "target_param", "default": "" },
+      { "key": "target_param", "name": "Target Param", "type": "parameter_picker", "target_key": "module_target", "numeric_only": false, "allow_none": true, "default": "" },
+      { "key": "sync_only_amount", "name": "Sync Amt", "type": "float", "min": 0.0, "max": 1.0, "default": 0.20, "step": 0.01 },
+      { "key": "last_callback", "name": "Last Callback", "type": "string", "default": "" }
+    ]
+  }
+}

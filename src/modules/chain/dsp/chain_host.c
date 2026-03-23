@@ -1882,14 +1882,34 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
     if (!type_start) return -1;
     type_start++;
 
-    if (strncmp(type_start, "float", 5) == 0) {
+    int type_is_boolean = 0;
+    int type_is_time = 0;
+
+    if (strncmp(type_start, "float", 5) == 0 ||
+        strncmp(type_start, "percentage", 10) == 0 ||
+        strncmp(type_start, "bipolar", 7) == 0 ||
+        strncmp(type_start, "waveform_position", 17) == 0 ||
+        strncmp(type_start, "macro", 5) == 0) {
         param->type = KNOB_TYPE_FLOAT;
-    } else if (strncmp(type_start, "int", 3) == 0) {
+    } else if (strncmp(type_start, "int", 3) == 0 ||
+               strncmp(type_start, "note", 4) == 0) {
         param->type = KNOB_TYPE_INT;
-    } else if (strncmp(type_start, "enum", 4) == 0) {
+    } else if (strncmp(type_start, "enum", 4) == 0 ||
+               strncmp(type_start, "mode", 4) == 0 ||
+               strncmp(type_start, "time", 4) == 0 ||
+               strncmp(type_start, "mod_target", 10) == 0 ||
+               strncmp(type_start, "module_picker", 13) == 0 ||
+               strncmp(type_start, "parameter_picker", 16) == 0 ||
+               strncmp(type_start, "bool", 4) == 0 ||
+               strncmp(type_start, "boolean", 7) == 0) {
         param->type = KNOB_TYPE_ENUM;
+        type_is_time = (strncmp(type_start, "time", 4) == 0);
+        type_is_boolean = (strncmp(type_start, "bool", 4) == 0 ||
+                           strncmp(type_start, "boolean", 7) == 0);
     } else {
-        return -1;
+        /* Unknown/new UI types default to float semantics so we do not drop them.
+         * Shadow UI can still use richer metadata from ui_hierarchy. */
+        param->type = KNOB_TYPE_FLOAT;
     }
 
     /* Extract min (optional for enum) */
@@ -2003,6 +2023,40 @@ static int parse_param_object(const char *param_json, chain_param_info_t *param)
                     opt = opt_end + 1;
                 }
             }
+        }
+
+        /* Time params may provide divisions instead of options. */
+        if (param->option_count == 0 && type_is_time) {
+            const char *div_start = bounded_strstr(param_json, param_obj_end, "\"divisions\"");
+            if (div_start) {
+                div_start = strchr(div_start, '[');
+                if (div_start) {
+                    div_start++;
+                    const char *opt = div_start;
+                    while (param->option_count < MAX_ENUM_OPTIONS) {
+                        opt = strchr(opt, '"');
+                        if (!opt || opt > strstr(div_start, "]")) break;
+                        opt++;
+                        const char *opt_end = strchr(opt, '"');
+                        if (!opt_end) break;
+
+                        int len = opt_end - opt;
+                        if (len >= 32) len = 31;
+                        memcpy(param->options[param->option_count], opt, len);
+                        param->options[param->option_count][len] = '\0';
+                        param->option_count++;
+
+                        opt = opt_end + 1;
+                    }
+                }
+            }
+        }
+
+        /* Boolean params default to off/on when no options are supplied. */
+        if (param->option_count == 0 && type_is_boolean) {
+            strcpy(param->options[0], "off");
+            strcpy(param->options[1], "on");
+            param->option_count = 2;
         }
 
         /* Set max_val for enums to option_count - 1 */

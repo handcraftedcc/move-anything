@@ -231,6 +231,8 @@ const VIEWS = {
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
     MASTER_FX: "masterfx",    // Master FX selection
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
+    CANVAS: "canvas",         // Full-screen canvas preview/editor
+    VISUALIZER: "visualizer", // Full-screen inactivity visualizer overlay
     FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
@@ -325,6 +327,8 @@ const VIEW_NAMES = {
     [VIEWS.COMPONENT_EDIT]: "Preset Picker",
     [VIEWS.MASTER_FX]: "Master FX",
     [VIEWS.HIERARCHY_EDITOR]: "Hierarchy Editor",
+    [VIEWS.CANVAS]: "Canvas",
+    [VIEWS.VISUALIZER]: "Visualizer",
     [VIEWS.FILEPATH_BROWSER]: "File Browser",
     [VIEWS.KNOB_EDITOR]: "Knob Editor",
     [VIEWS.KNOB_PARAM_PICKER]: "Parameter Picker",
@@ -390,6 +394,7 @@ const OVERTAKE_INIT_DELAY_TICKS = 30; // ~500ms at 16ms tick
 /* Progressive LED clearing - buffer only holds ~60 packets, so clear in batches */
 const LEDS_PER_BATCH = 20;
 let ledClearIndex = 0;
+
 
 function clearLedBatch() {
     /* Clear LEDs in batches. Notes for pads/steps, CCs for buttons/knob indicators. */
@@ -1325,6 +1330,7 @@ let hierEditorSelectedIdx = 0;
 let hierEditorEditMode = false;   // true when editing a param value
 let hierEditorEditKey = "";       // full key currently being edited
 let hierEditorEditValue = null;   // stable value during edit mode
+let hierEditorEditOriginalValue = null; // value snapshot for cancel/revert
 let hierEditorChainParams = [];   // metadata from chain_params
 
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
@@ -1346,6 +1352,19 @@ let hierEditorNavigateTo = "";        // level to navigate to after item selecti
 /* Filepath browser state (for chain_params type: filepath) */
 let filepathBrowserState = null;
 let filepathBrowserParamKey = "";
+let waveformPreviewCache = {
+    signature: "",
+    path: "",
+    points: [],
+    error: ""
+};
+let canvasParamKey = "";
+let canvasParamMeta = null;
+let canvasRuntime = null;
+let hierarchyVisualizerConfig = null;
+let hierarchyVisualizerRuntime = null;
+let hierarchyVisualizerLastControlMs = 0;
+let waveformPreviewErrorSignature = "";
 const FILEPATH_BROWSER_FS = {
     readdir(path) {
         const entries = os.readdir(path) || [];
@@ -1362,6 +1381,289 @@ function parseMetaBool(value) {
     if (value === false || value === 0 || value === null || value === undefined) return false;
     const v = String(value).trim().toLowerCase();
     return v === "1" || v === "true" || v === "on" || v === "yes";
+}
+
+function parseMetaNumber(value, fallback = null) {
+    if (value === null || value === undefined || value === "") return fallback;
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeParamType(rawType) {
+    const t = String(rawType || "").trim().toLowerCase();
+    if (!t) return "float";
+    if (t === "bool" || t === "boolean") return "bool";
+    if (t === "percentage" || t === "bipolar" || t === "waveform_position") return "float";
+    if (t === "note") return "int";
+    if (t === "mode" || t === "time" || t === "mod_target") return "enum";
+    return t;
+}
+
+function isNumericParamType(type) {
+    const t = normalizeParamType(type);
+    return t === "float" || t === "int";
+}
+
+function normalizeEnumOptions(meta) {
+    if (!meta || typeof meta !== "object") return [];
+    if (Array.isArray(meta.options) && meta.options.length > 0) {
+        return meta.options.map(v => String(v));
+    }
+    if (meta.options && typeof meta.options === "object" &&
+        Array.isArray(meta.options.values) && meta.options.values.length > 0) {
+        return meta.options.values.map(v => String(v));
+    }
+    if (Array.isArray(meta.values) && meta.values.length > 0) {
+        return meta.values.map(v => String(v));
+    }
+    if (Array.isArray(meta.available_targets) && meta.available_targets.length > 0) {
+        return meta.available_targets.map(v => String(v));
+    }
+    if (Array.isArray(meta.divisions) && meta.divisions.length > 0) {
+        return meta.divisions.map(v => String(v));
+    }
+    if (meta.options && typeof meta.options === "object" &&
+        Array.isArray(meta.options.divisions) && meta.options.divisions.length > 0) {
+        return meta.options.divisions.map(v => String(v));
+    }
+    return [];
+}
+
+function getHierarchyParamDef(key) {
+    if (!hierEditorHierarchy || !key) return null;
+
+    if (Array.isArray(hierEditorHierarchy.shared_params)) {
+        for (const p of hierEditorHierarchy.shared_params) {
+            if (p && typeof p === "object" && p.key === key) return p;
+        }
+    }
+
+    const levels = hierEditorHierarchy.levels || {};
+    for (const levelName of Object.keys(levels)) {
+        const level = levels[levelName];
+        if (!level || !Array.isArray(level.params)) continue;
+        for (const p of level.params) {
+            if (p && typeof p === "object" && p.key === key) return p;
+        }
+    }
+    return null;
+}
+
+function normalizeParamMeta(rawMeta, key) {
+    if (!rawMeta || typeof rawMeta !== "object") return null;
+    const rawType = String(rawMeta.type || "").trim().toLowerCase();
+    const type = normalizeParamType(rawType);
+    const options = normalizeEnumOptions(rawMeta);
+
+    const mergedCallbacks = (rawMeta.callbacks && typeof rawMeta.callbacks === "object")
+        ? rawMeta.callbacks
+        : {};
+
+    const meta = {
+        ...rawMeta,
+        raw_type: rawType || type,
+        type,
+        key: rawMeta.key || key || "",
+        name: rawMeta.name || rawMeta.label || key || "",
+        label: rawMeta.label || rawMeta.name || key || "",
+        min: parseMetaNumber(rawMeta.min, null),
+        max: parseMetaNumber(rawMeta.max, null),
+        step: parseMetaNumber(rawMeta.step, null),
+        increment_jog: parseMetaNumber(rawMeta.increment_jog, null),
+        increment_knob: parseMetaNumber(rawMeta.increment_knob, null),
+        fine_increment: parseMetaNumber(rawMeta.fine_increment, null),
+        options,
+        wrap: rawMeta.wrap !== undefined ? parseMetaBool(rawMeta.wrap) : true,
+        visibility: rawMeta.visibility || "show",
+        conditional_display: rawMeta.conditional_display || null,
+        onEnter: rawMeta.onEnter || mergedCallbacks.onEnter || null,
+        onModify: rawMeta.onModify || mergedCallbacks.onModify || null,
+        onExit: rawMeta.onExit || mergedCallbacks.onExit || null,
+        onCancel: rawMeta.onCancel || mergedCallbacks.onCancel || null,
+        onMidi: rawMeta.onMidi || mergedCallbacks.onMidi || null
+    };
+
+    if (meta.raw_type === "percentage") {
+        if (meta.min === null) meta.min = 0;
+        if (meta.max === null) meta.max = 100;
+        if (meta.step === null) meta.step = 1;
+        if (!meta.unit) meta.unit = "%";
+    } else if (meta.raw_type === "bipolar") {
+        if (meta.min === null) meta.min = -1;
+        if (meta.max === null) meta.max = 1;
+        if (meta.step === null) meta.step = 0.01;
+    } else if (meta.raw_type === "note") {
+        if (meta.min === null) meta.min = 0;
+        if (meta.max === null) meta.max = 127;
+        if (meta.step === null) meta.step = 1;
+    } else if (meta.type === "bool") {
+        if (meta.options.length === 0) meta.options = ["off", "on"];
+        meta.wrap = false;
+    } else if (meta.type === "enum" && meta.raw_type === "time" && meta.options.length === 0) {
+        meta.options = ["1/1", "1/2", "1/4", "1/8", "1/16"];
+    }
+
+    if (meta.min === null && meta.type === "float") meta.min = 0;
+    if (meta.max === null && meta.type === "float") meta.max = 1;
+    if (meta.min === null && meta.type === "int") meta.min = 0;
+    if (meta.max === null && meta.type === "int") meta.max = 127;
+    if (meta.step === null) meta.step = meta.type === "int" ? 1 : 0.02;
+
+    return meta;
+}
+
+function conditionContextSet(ctx, key, value) {
+    ctx[key] = value;
+    if (key.indexOf(".") === -1) return;
+    const parts = key.split(".");
+    let node = ctx;
+    for (let i = 0; i < parts.length - 1; i++) {
+        const part = parts[i];
+        if (!node[part] || typeof node[part] !== "object") node[part] = {};
+        node = node[part];
+    }
+    node[parts[parts.length - 1]] = value;
+}
+
+function coerceConditionValue(raw, meta) {
+    if (raw === null || raw === undefined) return null;
+    const text = String(raw);
+    if (meta && meta.type === "bool") return parseMetaBool(text);
+    const lowered = text.trim().toLowerCase();
+    if (lowered === "true" || lowered === "on" || lowered === "yes") return true;
+    if (lowered === "false" || lowered === "off" || lowered === "no") return false;
+    const num = parseFloat(text);
+    if (!isNaN(num) && /^-?\d+(\.\d+)?$/.test(text.trim())) return num;
+    return raw;
+}
+
+function buildConditionContext() {
+    const ctx = {};
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    if (!prefix) return ctx;
+    const seen = new Set();
+    const chainParams = Array.isArray(hierEditorChainParams) ? hierEditorChainParams : [];
+    for (const p of chainParams) {
+        if (!p || !p.key) continue;
+        const meta = normalizeParamMeta(p, p.key);
+        const val = getSlotParam(hierEditorSlot, `${prefix}:${p.key}`);
+        conditionContextSet(ctx, p.key, coerceConditionValue(val, meta));
+        seen.add(p.key);
+    }
+
+    const levels = hierEditorHierarchy && hierEditorHierarchy.levels ? hierEditorHierarchy.levels : {};
+    for (const levelName of Object.keys(levels)) {
+        const level = levels[levelName];
+        if (!level || !Array.isArray(level.params)) continue;
+        for (const entry of level.params) {
+            if (!entry) continue;
+            const key = typeof entry === "string" ? entry : entry.key;
+            if (!key || seen.has(key)) continue;
+            const meta = normalizeParamMeta(entry, key);
+            const val = getSlotParam(hierEditorSlot, `${prefix}:${key}`);
+            conditionContextSet(ctx, key, coerceConditionValue(val, meta));
+            seen.add(key);
+        }
+    }
+    return ctx;
+}
+
+function evaluateConditionalDisplay(expression, context) {
+    if (!expression || typeof expression !== "string") return true;
+    const normalized = expression
+        .replace(/\band\b/gi, "&&")
+        .replace(/\bor\b/gi, "||")
+        .replace(/\bnot\b/gi, "!");
+    try {
+        const fn = Function("ctx", `with (ctx) { return !!(${normalized}); }`);
+        return !!fn(context || {});
+    } catch (e) {
+        debugLog(`conditional_display parse failed: ${expression} (${e})`);
+        return true;
+    }
+}
+
+function isParamVisible(meta, context) {
+    if (!meta) return true;
+    const visibility = String(meta.visibility || "show").toLowerCase();
+    if (visibility === "hide" || visibility === "hidden") return false;
+    return evaluateConditionalDisplay(meta.conditional_display, context);
+}
+
+function callParamCallback(meta, hookName, key, value, previousValue) {
+    if (!meta || !hookName) return;
+    const cb = meta[hookName];
+    if (!cb || typeof cb !== "string") return;
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    if (!prefix) return;
+    const callbackKey = cb.includes(":") ? cb : `${prefix}:${cb}`;
+    const payload = JSON.stringify({
+        event: hookName,
+        key,
+        value: value === undefined ? null : value,
+        previous_value: previousValue === undefined ? null : previousValue
+    });
+    setSlotParam(hierEditorSlot, callbackKey, payload);
+}
+
+function refreshHierarchyParamList() {
+    loadHierarchyLevel();
+    if (hierEditorSelectedIdx >= hierEditorParams.length) {
+        hierEditorSelectedIdx = Math.max(0, hierEditorParams.length - 1);
+    }
+    invalidateKnobContextCache();
+}
+
+function levelHasVisibilityLogic(levelDef) {
+    if (!levelDef || !Array.isArray(levelDef.params)) return false;
+    for (const entry of levelDef.params) {
+        if (!entry || typeof entry !== "object") continue;
+        if (entry.conditional_display) return true;
+        if (entry.visibility && String(entry.visibility).toLowerCase() !== "show") return true;
+    }
+    return false;
+}
+
+function expressionMentionsKey(expression, key) {
+    if (!expression || !key) return false;
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`);
+    return re.test(String(expression));
+}
+
+function levelVisibilityDependsOnKey(levelDef, changedKey) {
+    if (!levelDef || !Array.isArray(levelDef.params) || !changedKey) return false;
+    for (const entry of levelDef.params) {
+        if (!entry || typeof entry !== "object") continue;
+        if (entry.conditional_display && expressionMentionsKey(entry.conditional_display, changedKey)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function refreshHierarchyParamListIfNeeded(force = false, changedKey = "") {
+    if (force) {
+        refreshHierarchyParamList();
+        return;
+    }
+    const levelDef = getHierarchyLevelDef();
+    if (!levelHasVisibilityLogic(levelDef)) return;
+    if (changedKey && !levelVisibilityDependsOnKey(levelDef, changedKey)) return;
+    if (levelHasVisibilityLogic(levelDef)) {
+        refreshHierarchyParamList();
+    }
+}
+
+function formatMidiNoteName(noteValue) {
+    const n = Math.max(0, Math.min(127, Math.round(noteValue)));
+    const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const octave = Math.floor(n / 12) - 1;
+    return `${names[n % 12]}${octave}`;
+}
+
+function getBoolDisplayValue(rawVal) {
+    return parseMetaBool(rawVal) ? "On" : "Off";
 }
 
 function normalizeFilepathHookActions(rawActions, prefix) {
@@ -1540,6 +1842,8 @@ function setupModuleParamShims(slot, componentKey) {
     globalThis.host_module_set_param = function(key, value) {
         return setSlotParam(slot, `${prefix}:${key}`, value);
     };
+
+    installParameterApi(globalThis.host_module_get_param, globalThis.host_module_set_param);
 }
 
 /* Clear the param shims */
@@ -1547,6 +1851,7 @@ function clearModuleParamShims() {
     delete globalThis.host_module_get_param;
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
+    delete globalThis.parameter;
     delete globalThis.host_exit_module;
 }
 
@@ -1777,22 +2082,39 @@ function getSlotParam(slot, key) {
     }
 }
 
+function handlePostWriteWarnings(slot, key, value) {
+    /* Re-check MIDI FX warnings immediately after sync/module changes. */
+    if (key === "midi_fx1:module") {
+        warningShownForMidiFxSlots.delete(slot);
+    }
+    if (key === "midi_fx1:sync") {
+        warningShownForMidiFxSlots.delete(slot);
+        if (String(value) === "clock") {
+            checkAndShowMidiFxError(slot);
+        }
+    }
+}
+
+function handlePostWriteUiRefresh(slot, key) {
+    needsRedraw = true;
+
+    if (view === VIEWS.HIERARCHY_EDITOR && slot === hierEditorSlot) {
+        const prefix = getComponentParamPrefix(hierEditorComponent);
+        if (prefix && typeof key === "string" && key.startsWith(prefix + ":")) {
+            const changedKey = key.slice(prefix.length + 1);
+            refreshHierarchyParamListIfNeeded(false, changedKey);
+        }
+    }
+}
+
 function setSlotParam(slot, key, value) {
     if (typeof shadow_set_param !== "function") return false;
     try {
         const ok = shadow_set_param(slot, key, String(value));
         if (!ok) return false;
 
-        /* Re-check MIDI FX warnings immediately after sync/module changes. */
-        if (key === "midi_fx1:module") {
-            warningShownForMidiFxSlots.delete(slot);
-        }
-        if (key === "midi_fx1:sync") {
-            warningShownForMidiFxSlots.delete(slot);
-            if (String(value) === "clock") {
-                checkAndShowMidiFxError(slot);
-            }
-        }
+        handlePostWriteWarnings(slot, key, value);
+        handlePostWriteUiRefresh(slot, key);
 
         return true;
     } catch (e) {
@@ -1804,12 +2126,29 @@ function setSlotParamWithTimeout(slot, key, value, timeoutMs) {
     const timeout = Number.isFinite(timeoutMs) ? Math.max(1, Math.floor(timeoutMs)) : 100;
     if (typeof shadow_set_param_timeout === "function") {
         try {
-            return shadow_set_param_timeout(slot, key, String(value), timeout);
+            const ok = shadow_set_param_timeout(slot, key, String(value), timeout);
+            if (ok) {
+                handlePostWriteWarnings(slot, key, value);
+                handlePostWriteUiRefresh(slot, key);
+            }
+            return ok;
         } catch (e) {
             return false;
         }
     }
     return setSlotParam(slot, key, value);
+}
+
+function installParameterApi(getter, setter) {
+    globalThis.parameter = {
+        get: function(key) {
+            return getter ? getter(key) : null;
+        },
+        set: function(key, value) {
+            if (!setter) return false;
+            return !!setter(key, value);
+        }
+    };
 }
 
 function setSlotParamWithRetry(slot, key, value, timeoutMs, retryTimeoutMs, logLabel) {
@@ -2015,6 +2354,7 @@ function exitOvertakeMode() {
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
+    delete globalThis.parameter;
 
     overtakeModuleLoaded = false;
     overtakeModulePath = "";
@@ -2050,6 +2390,7 @@ function exitToolOvertake() {
     delete globalThis.host_module_set_param;
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_module_get_param;
+    delete globalThis.parameter;
     delete globalThis.host_exit_module;
     delete globalThis.host_hide_module;
 
@@ -2217,8 +2558,11 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * is evaluated, it won't be found later even if added afterwards. */
         globalThis.host_module_set_param = function(key, value) {
             if (typeof shadow_set_param === "function") {
-                return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                const ok = shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                if (ok) needsRedraw = true;
+                return ok;
             }
+            return false;
         };
         /* Blocking set_param that waits for the shim to process the request.
          * Use for critical params (e.g. file_path) that must be delivered
@@ -2228,11 +2572,16 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         globalThis.host_module_set_param_blocking = function(key, value, timeoutMs) {
             var timeout = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 500;
             if (typeof shadow_set_param_timeout === "function") {
-                return shadow_set_param_timeout(0, "overtake_dsp:" + key, String(value), timeout);
+                const ok = shadow_set_param_timeout(0, "overtake_dsp:" + key, String(value), timeout);
+                if (ok) needsRedraw = true;
+                return ok;
             }
             if (typeof shadow_set_param === "function") {
-                return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                const ok = shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                if (ok) needsRedraw = true;
+                return ok;
             }
+            return false;
         };
         globalThis.host_module_get_param = function(key) {
             if (typeof shadow_get_param === "function") {
@@ -2240,6 +2589,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             }
             return null;
         };
+        installParameterApi(globalThis.host_module_get_param, globalThis.host_module_set_param);
         globalThis.host_exit_module = function() {
             debugLog("host_exit_module called by overtake module");
             if (toolOvertakeActive) {
@@ -2293,6 +2643,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
                 overtakeModuleCallbacks = null;
                 delete globalThis.host_module_set_param;
                 delete globalThis.host_module_get_param;
+                delete globalThis.parameter;
                 if (typeof shadow_set_param === "function") {
                     shadow_set_param(0, "overtake_dsp:unload", "1");
                 }
@@ -2306,6 +2657,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             deactivateLedQueue();
             delete globalThis.host_module_set_param;
             delete globalThis.host_module_get_param;
+            delete globalThis.parameter;
             return false;
         }
 
@@ -2357,6 +2709,7 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         }
         delete globalThis.host_module_set_param;
         delete globalThis.host_module_get_param;
+        delete globalThis.parameter;
         delete globalThis.host_exit_module;
         if (typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(0);
@@ -2498,7 +2851,12 @@ function getComponentChainParams(slot, componentKey) {
     if (!json) return [];
 
     try {
-        return JSON.parse(json);
+        const parsed = JSON.parse(json);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter(p => p && typeof p === "object" && p.key)
+            .map(p => normalizeParamMeta(p, p.key))
+            .filter(Boolean);
     } catch (e) {
         return [];
     }
@@ -2534,7 +2892,12 @@ function getMasterFxChainParams(fxSlot) {
     const json = shadow_get_param(0, key);
     if (!json) return [];
     try {
-        return JSON.parse(json);
+        const parsed = JSON.parse(json);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter(p => p && typeof p === "object" && p.key)
+            .map(p => normalizeParamMeta(p, p.key))
+            .filter(Boolean);
     } catch (e) {
         return [];
     }
@@ -3941,22 +4304,31 @@ function startInteractiveTool(toolModule, filePath) {
              * evaluates the module JS — even if they were set before. */
             globalThis.host_module_set_param = function(key, value) {
                 if (typeof shadow_set_param === "function") {
-                    return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                    const ok = shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                    if (ok) needsRedraw = true;
+                    return ok;
                 }
+                return false;
             };
             globalThis.host_module_set_param_blocking = function(key, value, timeoutMs) {
                 var timeout = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 500;
                 if (typeof shadow_set_param_timeout === "function") {
-                    return shadow_set_param_timeout(0, "overtake_dsp:" + key, String(value), timeout);
+                    const ok = shadow_set_param_timeout(0, "overtake_dsp:" + key, String(value), timeout);
+                    if (ok) needsRedraw = true;
+                    return ok;
                 } else if (typeof shadow_set_param === "function") {
-                    return shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                    const ok = shadow_set_param(0, "overtake_dsp:" + key, String(value));
+                    if (ok) needsRedraw = true;
+                    return ok;
                 }
+                return false;
             };
             globalThis.host_module_get_param = function(key) {
                 if (typeof shadow_get_param === "function") {
                     return shadow_get_param(0, "overtake_dsp:" + key);
                 }
             };
+            installParameterApi(globalThis.host_module_get_param, globalThis.host_module_set_param);
             globalThis.host_exit_module = function() {
                 debugLog("host_exit_module called by overtake module (reconnect)");
                 if (toolOvertakeActive) {
@@ -5659,10 +6031,15 @@ function getNumericParamsForTarget(slot, target, numericOnly = true) {
                             const key = (typeof entry === "string") ? entry : (entry && entry.key ? entry.key : "");
                             if (!key) continue;
 
-                            const meta = chainMetaByKey.get(key);
+                            const chainMeta = chainMetaByKey.get(key) || null;
+                            const inlineMeta = (entry && typeof entry === "object") ? entry : { key };
+                            const meta = normalizeParamMeta({
+                                ...inlineMeta,
+                                ...(chainMeta || {})
+                            }, key);
                             if (!meta) continue;
                             const type = (meta.type || "").toLowerCase();
-                            const isNumeric = type === "float" || type === "int" ||
+                            const isNumeric = isNumericParamType(type) ||
                                 (!type && (meta.min !== undefined || meta.max !== undefined));
                             if (numericOnly && !isNumeric) continue;
 
@@ -5692,7 +6069,7 @@ function getNumericParamsForTarget(slot, target, numericOnly = true) {
         for (const p of chainParams) {
             if (!p || !p.key) continue;
             const type = (p.type || "").toLowerCase();
-            const isNumeric = type === "float" || type === "int" ||
+            const isNumeric = isNumericParamType(type) ||
                 (!type && (p.min !== undefined || p.max !== undefined));
             if (numericOnly && !isNumeric) continue;
             if (!seen.has(p.key)) {
@@ -6190,6 +6567,7 @@ function enterHierarchyEditor(slotIndex, componentKey) {
     hierEditorMasterFxSlot = -1;
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
+    resetHierarchyVisualizerSession();
     resetDynamicParamPickerState();
 
     /* Fetch chain_params metadata for this component */
@@ -6200,6 +6578,7 @@ function enterHierarchyEditor(slotIndex, componentKey) {
 
     /* Load current level's params and knobs */
     loadHierarchyLevel();
+    refreshHierarchyVisualizerConfig();
 
     /* Check for synth errors (missing assets) when entering synth editor */
     if (componentKey === "synth") {
@@ -6260,6 +6639,7 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     resetHierarchyEditState();
     hierEditorIsMasterFx = true;
     hierEditorMasterFxSlot = fxSlot;
+    resetHierarchyVisualizerSession();
     resetDynamicParamPickerState();
 
     /* Fetch chain_params metadata for this Master FX slot */
@@ -6270,6 +6650,7 @@ function enterMasterFxHierarchyEditor(fxSlot) {
 
     /* Load current level's params and knobs */
     loadHierarchyLevel();
+    refreshHierarchyVisualizerConfig();
 
     setView(VIEWS.HIERARCHY_EDITOR);
     needsRedraw = true;
@@ -6288,6 +6669,44 @@ function enterMasterFxHierarchyEditor(fxSlot) {
     } else {
         announce(`${moduleName}, No parameters`);
     }
+}
+
+function getVisibleHierarchyParams(params) {
+    if (!Array.isArray(params) || params.length === 0) return [];
+    const context = buildConditionContext();
+    const visible = [];
+
+    for (const entry of params) {
+        if (typeof entry === "string") {
+            const meta = getParamMetadata(entry);
+            if (isParamVisible(meta, context)) visible.push(entry);
+            continue;
+        }
+
+        if (!entry || typeof entry !== "object") {
+            visible.push(entry);
+            continue;
+        }
+
+        if (entry.key) {
+            const mergedMeta = normalizeParamMeta({
+                ...(getParamMetadata(entry.key) || {}),
+                ...entry
+            }, entry.key);
+            if (isParamVisible(mergedMeta, context)) visible.push(entry);
+            continue;
+        }
+
+        if (entry.level) {
+            const navMeta = normalizeParamMeta(entry, entry.level);
+            if (isParamVisible(navMeta, context)) visible.push(entry);
+            continue;
+        }
+
+        visible.push(entry);
+    }
+
+    return visible;
 }
 
 /* Load params and knobs for current hierarchy level */
@@ -6351,9 +6770,10 @@ function loadHierarchyLevel() {
         hierEditorPresetName = getSlotParam(hierEditorSlot, `${prefix}:${nameParam}`) || "";
 
         /* Also load params for preset edit mode (swap only at top level) */
+        const baseParams = getVisibleHierarchyParams(levelDef.params || []);
         hierEditorParams = isTopLevel
-            ? [...(levelDef.params || []), SWAP_MODULE_ACTION]
-            : (levelDef.params || []);
+            ? [...baseParams, SWAP_MODULE_ACTION]
+            : baseParams;
     } else if (levelDef.items_param) {
         /* Dynamic items level - fetch items from plugin */
         hierEditorIsPresetLevel = false;
@@ -6386,9 +6806,10 @@ function loadHierarchyLevel() {
         hierEditorIsDynamicItems = false;
         hierEditorPresetEditMode = false;
         /* Use hierarchy params for scrollable list, knobs for physical mapping */
+        const baseParams = getVisibleHierarchyParams(levelDef.params || []);
         hierEditorParams = isTopLevel
-            ? [...(levelDef.params || []), SWAP_MODULE_ACTION]
-            : (levelDef.params || []);
+            ? [...baseParams, SWAP_MODULE_ACTION]
+            : baseParams;
         hierEditorKnobs = levelDef.knobs || [];
     }
 }
@@ -6455,6 +6876,8 @@ function exitHierarchyEditor() {
     hierEditorMasterFxSlot = -1;
     filepathBrowserState = null;
     filepathBrowserParamKey = "";
+    closeHierarchyVisualizer("exit_hierarchy");
+    resetHierarchyVisualizerSession();
     resetDynamicParamPickerState();
 
     view = returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
@@ -6553,37 +6976,135 @@ function closeHierarchyFilepathBrowser() {
 }
 
 /* Get param metadata from chain_params */
+function mergeParamMetadata(hierarchyMeta, chainMeta) {
+    if (!hierarchyMeta && !chainMeta) return null;
+    if (!hierarchyMeta) return { ...chainMeta };
+    if (!chainMeta) return { ...hierarchyMeta };
+
+    /* Prefer ui_hierarchy semantics; fill numeric/runtime hints from chain_params only when missing. */
+    const merged = {
+        ...chainMeta,
+        ...hierarchyMeta
+    };
+
+    const hierarchyType = String(hierarchyMeta.type || "").trim().toLowerCase();
+    const allowChainNumericHints = hierarchyType === "float" || hierarchyType === "int";
+    if (allowChainNumericHints) {
+        if (hierarchyMeta.min === undefined && chainMeta.min !== undefined) merged.min = chainMeta.min;
+        if (hierarchyMeta.max === undefined && chainMeta.max !== undefined) merged.max = chainMeta.max;
+        if (hierarchyMeta.step === undefined && chainMeta.step !== undefined) merged.step = chainMeta.step;
+        if (hierarchyMeta.increment_jog === undefined && chainMeta.increment_jog !== undefined) merged.increment_jog = chainMeta.increment_jog;
+        if (hierarchyMeta.increment_knob === undefined && chainMeta.increment_knob !== undefined) merged.increment_knob = chainMeta.increment_knob;
+        if (hierarchyMeta.fine_increment === undefined && chainMeta.fine_increment !== undefined) merged.fine_increment = chainMeta.fine_increment;
+    } else {
+        const numericKeys = ["min", "max", "step", "increment_jog", "increment_knob", "fine_increment"];
+        for (const k of numericKeys) {
+            if (hierarchyMeta[k] !== undefined) {
+                merged[k] = hierarchyMeta[k];
+            } else {
+                delete merged[k];
+            }
+        }
+    }
+
+    if ((!Array.isArray(hierarchyMeta.options) || hierarchyMeta.options.length === 0) &&
+        Array.isArray(chainMeta.options) && chainMeta.options.length > 0) {
+        merged.options = chainMeta.options;
+    }
+
+    return merged;
+}
+
 function getParamMetadata(key) {
-    if (!hierEditorChainParams) return null;
-    const rawMeta = hierEditorChainParams.find(p => p.key === key);
-    return getDynamicPickerMeta(key, rawMeta);
+    const chainMeta = Array.isArray(hierEditorChainParams)
+        ? (hierEditorChainParams.find(p => p && p.key === key) || null)
+        : null;
+    const hierarchyMeta = getHierarchyParamDef(key);
+    if (!chainMeta && !hierarchyMeta) return null;
+
+    const merged = mergeParamMetadata(hierarchyMeta, chainMeta);
+
+    const dynamicMeta = getDynamicPickerMeta(key, merged);
+    return normalizeParamMeta(dynamicMeta, key);
 }
 
 /* Format a param value for setting (respects type) */
 function formatParamForSet(val, meta) {
+    if (meta && meta.type === "bool") {
+        return (val >= 0.5) ? "1" : "0";
+    }
     if (meta && meta.type === "int") {
         return Math.round(val).toString();
     }
-    return val.toFixed(3);
+
+    const decimalsFromValue = function(n) {
+        if (!(typeof n === "number") || !(n > 0)) return 0;
+        const s = n.toString().toLowerCase();
+        if (s.indexOf("e-") >= 0) {
+            const exp = parseInt(s.slice(s.indexOf("e-") + 2), 10);
+            return Number.isFinite(exp) ? exp : 0;
+        }
+        const dot = s.indexOf(".");
+        return dot >= 0 ? (s.length - dot - 1) : 0;
+    };
+
+    let precision = 3;
+    if (meta && typeof meta === "object") {
+        const candidates = [];
+        const addCandidate = function(v) {
+            if (typeof v === "number" && v > 0) candidates.push(v);
+        };
+        addCandidate(meta.step);
+        addCandidate(meta.increment_jog);
+        addCandidate(meta.increment_knob);
+        addCandidate(meta.fine_increment);
+
+        if (isWaveformPositionMeta(meta)) {
+            const min = (typeof meta.min === "number") ? meta.min : 0;
+            const max = (typeof meta.max === "number") ? meta.max : 1;
+            const range = Math.max(0, max - min);
+            if (range > 0) {
+                const derivedFine = range * 0.001; // Shift fine step default (0.1% of range)
+                const explicitFine = (typeof meta.fine_increment === "number" && meta.fine_increment > 0)
+                    ? meta.fine_increment
+                    : 0;
+                addCandidate(explicitFine > 0 ? explicitFine : derivedFine);
+            }
+        }
+
+        if (candidates.length > 0) {
+            let maxDecimals = 0;
+            for (const c of candidates) {
+                const d = decimalsFromValue(c);
+                if (d > maxDecimals) maxDecimals = d;
+            }
+            precision = Math.min(6, Math.max(3, maxDecimals));
+        }
+    }
+
+    return val.toFixed(precision);
 }
 
 /* Format a param value for overlay display (respects type and range) */
 function formatParamForOverlay(val, meta) {
+    if (meta && meta.type === "bool") {
+        return getBoolDisplayValue(val);
+    }
     if (meta && meta.type === "int") {
         return Math.round(val).toString();
     }
     /* Enum/bool: show value as-is (string) */
-    if (meta && (meta.type === "enum" || meta.type === "bool")) {
+    if (meta && meta.type === "enum") {
         if (meta.picker_type && (val === "" || val === null || val === undefined)) {
             return meta.none_label || "(none)";
         }
         return String(val);
     }
-    /* Float: show as percentage if 0-1 or 0-2 range */
-    const min = meta && typeof meta.min === "number" ? meta.min : 0;
-    const max = meta && typeof meta.max === "number" ? meta.max : 1;
-    if (min === 0 && max >= 1 && max <= 4) {
-        return Math.round(val * 100) + "%";
+    if (meta && meta.raw_type === "note") {
+        return formatMidiNoteName(val);
+    }
+    if (meta && meta.raw_type === "percentage") {
+        return `${Math.round(val)}%`;
     }
     return val.toFixed(2);
 }
@@ -6602,9 +7123,29 @@ function buildHierarchyParamKey(key) {
     return `${prefix}:${key}`;
 }
 
+function findLevelParamDef(levelDef, key) {
+    if (!levelDef || !Array.isArray(levelDef.params) || !key) return null;
+    for (const entry of levelDef.params) {
+        if (entry && typeof entry === "object" && entry.key === key) {
+            return entry;
+        }
+    }
+    return null;
+}
+
+function resolveLevelKnobMeta(levelDef, key, chainParams) {
+    const chainMeta = Array.isArray(chainParams)
+        ? (chainParams.find(p => p && p.key === key) || null)
+        : null;
+    const levelMeta = findLevelParamDef(levelDef, key);
+    const merged = mergeParamMetadata(levelMeta, chainMeta);
+    return normalizeParamMeta(merged || levelMeta || chainMeta, key);
+}
+
 function resetHierarchyEditState() {
     hierEditorEditKey = "";
     hierEditorEditValue = null;
+    hierEditorEditOriginalValue = null;
 }
 
 function beginHierarchyParamEdit(key) {
@@ -6612,14 +7153,38 @@ function beginHierarchyParamEdit(key) {
     const baseVal = getSlotParam(hierEditorSlot, `${fullKey}:base`);
     const liveVal = getSlotParam(hierEditorSlot, fullKey);
     if (baseVal === null && liveVal === null) return false;
+    const meta = getParamMetadata(key);
+    if (meta && meta.raw_type === "waveform_position") {
+        hideOverlay();
+    }
 
     hierEditorEditKey = fullKey;
     hierEditorEditValue = (baseVal !== null) ? baseVal : liveVal;
+    hierEditorEditOriginalValue = hierEditorEditValue;
+    callParamCallback(meta, "onEnter", key, hierEditorEditValue, hierEditorEditOriginalValue);
     return true;
 }
 
 function shouldRefreshDynamicRateMeta(key) {
     return typeof key === "string" && /_rate_mode$/.test(key);
+}
+
+function isWaveformPositionMeta(meta) {
+    return !!(meta && meta.raw_type === "waveform_position");
+}
+
+function getWaveformFineStep(meta, min, max, fallbackStep) {
+    if (!isWaveformPositionMeta(meta) || !isShiftHeld()) return fallbackStep;
+
+    if (typeof meta.fine_increment === "number" && meta.fine_increment > 0) {
+        return meta.fine_increment;
+    }
+
+    const numericMin = (typeof min === "number") ? min : 0;
+    const numericMax = (typeof max === "number") ? max : 1;
+    const range = Math.max(0, numericMax - numericMin);
+    const fineStep = range * 0.001; // 0.1% of parameter range per detent while Shift is held
+    return fineStep > 0 ? fineStep : fallbackStep;
 }
 
 /* Adjust selected param value via jog */
@@ -6642,24 +7207,50 @@ function adjustHierSelectedParam(delta) {
 
     const meta = getParamMetadata(key);
 
-    /* Debug: log what we found */
-    debugLog(`adjustHierSelectedParam: key=${key}, currentVal=${currentVal}, meta=${JSON.stringify(meta)}, chainParams=${JSON.stringify(hierEditorChainParams)}`);
+    if (meta && meta.type === "button") return;
+
+    /* Handle bool type - toggle */
+    if (meta && meta.type === "bool") {
+        const oldVal = currentVal;
+        const oldBool = parseMetaBool(currentVal);
+        const newBool = delta >= 0 ? !oldBool : !oldBool;
+        let newVal = newBool ? "1" : "0";
+        if (meta.options && meta.options.length >= 2) {
+            newVal = newBool ? String(meta.options[1]) : String(meta.options[0]);
+        }
+        setSlotParam(hierEditorSlot, fullKey, newVal);
+        if (usingStableEditVal) {
+            hierEditorEditValue = newVal;
+        }
+        callParamCallback(meta, "onModify", key, newVal, oldVal);
+        refreshHierarchyParamListIfNeeded(false, key);
+        return;
+    }
 
     /* Handle enum type - cycle through options */
     if (meta && meta.type === "enum" && meta.options && meta.options.length > 0) {
+        const oldVal = currentVal;
         const currentIndex = meta.options.indexOf(currentVal);
-        let newIndex = currentIndex + delta;
-        if (newIndex < 0) newIndex = meta.options.length - 1;
-        if (newIndex >= meta.options.length) newIndex = 0;
+        let newIndex = currentIndex >= 0 ? currentIndex + delta : 0;
+        const wrap = meta.wrap !== undefined ? parseMetaBool(meta.wrap) : true;
+        if (wrap) {
+            if (newIndex < 0) newIndex = meta.options.length - 1;
+            if (newIndex >= meta.options.length) newIndex = 0;
+        } else {
+            if (newIndex < 0) newIndex = 0;
+            if (newIndex >= meta.options.length) newIndex = meta.options.length - 1;
+        }
         const newVal = meta.options[newIndex];
         setSlotParam(hierEditorSlot, fullKey, newVal);
         if (usingStableEditVal) {
             hierEditorEditValue = newVal;
         }
+        callParamCallback(meta, "onModify", key, newVal, oldVal);
         if (shouldRefreshDynamicRateMeta(key)) {
             refreshHierarchyChainParams();
             invalidateKnobContextCache();
         }
+        refreshHierarchyParamListIfNeeded(false, key);
         return;
     }
 
@@ -6669,16 +7260,22 @@ function adjustHierSelectedParam(delta) {
 
     /* Get step from metadata - default 1 for int, 0.02 for float */
     const isInt = meta && meta.type === "int";
-    const step = meta && meta.step ? meta.step : (isInt ? 1 : 0.02);
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
     const max = meta && typeof meta.max === "number" ? meta.max : 1;
+    const baseStep = meta && (meta.increment_jog || meta.step)
+        ? (meta.increment_jog || meta.step)
+        : (isInt ? 1 : 0.02);
+    const step = getWaveformFineStep(meta, min, max, baseStep);
 
+    const oldVal = currentVal;
     const newVal = Math.max(min, Math.min(max, num + delta * step));
     const formatted = formatParamForSet(newVal, meta);
     setSlotParam(hierEditorSlot, fullKey, formatted);
     if (usingStableEditVal) {
         hierEditorEditValue = formatted;
     }
+    callParamCallback(meta, "onModify", key, formatted, oldVal);
+    refreshHierarchyParamListIfNeeded(false, key);
 }
 
 /*
@@ -6761,7 +7358,7 @@ function buildKnobContextForKnob(knobIndex) {
                     const fullKey = `${prefix}:${key}`;
                     const chainParams = getComponentChainParams(selectedSlot, comp.key);
                     debugLog(`buildKnobContext: found knob key=${key}, fullKey=${fullKey}, chainParams count=${chainParams.length}`);
-                    const meta = chainParams.find(p => p.key === key);
+                    const meta = resolveLevelKnobMeta(levelDef, key, chainParams);
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
                     return {
                         slot: selectedSlot,
@@ -6849,7 +7446,7 @@ function buildKnobContextForKnob(knobIndex) {
                 if (levelDef && levelDef.knobs && knobIndex < levelDef.knobs.length) {
                     const key = levelDef.knobs[knobIndex];
                     const fullKey = `master_fx:${comp.key}:${key}`;
-                    const meta = chainParams.find(p => p.key === key);
+                    const meta = resolveLevelKnobMeta(levelDef, key, chainParams);
                     const displayName = meta && meta.name ? meta.name : key.replace(/_/g, " ");
                     return {
                         slot: 0,  /* Master FX always uses slot 0 for param access */
@@ -6972,13 +7569,17 @@ function showKnobOverlay(knobIndex, value) {
             const isEnum = ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool");
             if (value !== undefined) {
                 /* For enums, show string directly; for numbers, format */
-                displayVal = isEnum ? String(value) : formatParamForOverlay(value, ctx.meta);
+                displayVal = (ctx.meta && ctx.meta.type === "bool")
+                    ? getBoolDisplayValue(value)
+                    : (isEnum ? String(value) : formatParamForOverlay(value, ctx.meta));
             } else {
                 const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
                 /* For enums, show string directly; for numbers, parse and format */
                 if (isEnum) {
                     if (isTriggerEnumMeta(ctx.meta)) {
                         displayVal = getTriggerEnumOverlayValue(knobIndex);
+                    } else if (ctx.meta && ctx.meta.type === "bool") {
+                        displayVal = getBoolDisplayValue(currentVal);
                     } else {
                         displayVal = currentVal || "-";
                     }
@@ -7057,6 +7658,8 @@ function processPendingHierKnob() {
                     if (ctx.meta && (ctx.meta.type === "enum" || ctx.meta.type === "bool")) {
                         if (isTriggerEnumMeta(ctx.meta)) {
                             showOverlay(ctx.title, getTriggerEnumOverlayValue(pendingHierKnobIndex));
+                        } else if (ctx.meta.type === "bool") {
+                            showOverlay(ctx.title, getBoolDisplayValue(currentVal));
                         } else {
                             showOverlay(ctx.title, currentVal);
                         }
@@ -7074,15 +7677,29 @@ function processPendingHierKnob() {
     pendingHierKnobDelta = 0;  /* Clear accumulated delta */
 
     const ctx = getKnobContext(knobIndex);
-    debugLog(`processPendingHierKnob: ctx=${ctx ? JSON.stringify({slot: ctx.slot, key: ctx.key, fullKey: ctx.fullKey, noMapping: ctx.noMapping, meta: ctx.meta ? 'present' : 'null'}) : 'null'}`);
     if (!ctx || ctx.noMapping || !ctx.fullKey) return;
 
     /* Get current value */
     const currentVal = getSlotParam(ctx.slot, ctx.fullKey);
-    debugLog(`processPendingHierKnob: currentVal=${currentVal}`);
     if (currentVal === null) return;
 
-    /* Handle enum type - cycle through options (clamp at ends, don't wrap) */
+    /* Handle bool type - toggle */
+    if (ctx.meta && ctx.meta.type === "bool") {
+        const oldVal = currentVal;
+        const oldBool = parseMetaBool(currentVal);
+        const nextBool = !oldBool;
+        let newVal = nextBool ? "1" : "0";
+        if (ctx.meta.options && ctx.meta.options.length >= 2) {
+            newVal = nextBool ? String(ctx.meta.options[1]) : String(ctx.meta.options[0]);
+        }
+        setSlotParam(ctx.slot, ctx.fullKey, newVal);
+        callParamCallback(ctx.meta, "onModify", ctx.key, newVal, oldVal);
+        refreshHierarchyParamListIfNeeded(false, ctx.key);
+        showOverlay(ctx.title, getBoolDisplayValue(newVal));
+        return;
+    }
+
+    /* Handle enum type - cycle through options */
     if (ctx.meta && ctx.meta.type === "enum" && ctx.meta.options && ctx.meta.options.length > 0) {
         if (isTriggerEnumMeta(ctx.meta)) {
             const shouldFire = updateTriggerEnumAccum(knobIndex, delta);
@@ -7096,16 +7713,24 @@ function processPendingHierKnob() {
         }
 
         const currentIndex = ctx.meta.options.indexOf(currentVal);
-        let newIndex = currentIndex + (delta > 0 ? 1 : -1);
-        /* Clamp at ends instead of wrapping */
-        if (newIndex < 0) newIndex = 0;
-        if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
+        let newIndex = (currentIndex >= 0 ? currentIndex : 0) + (delta > 0 ? 1 : -1);
+        const wrap = ctx.meta.wrap !== undefined ? parseMetaBool(ctx.meta.wrap) : false;
+        if (wrap) {
+            if (newIndex < 0) newIndex = ctx.meta.options.length - 1;
+            if (newIndex >= ctx.meta.options.length) newIndex = 0;
+        } else {
+            if (newIndex < 0) newIndex = 0;
+            if (newIndex >= ctx.meta.options.length) newIndex = ctx.meta.options.length - 1;
+        }
         const newVal = ctx.meta.options[newIndex];
+        const oldVal = currentVal;
         setSlotParam(ctx.slot, ctx.fullKey, newVal);
+        callParamCallback(ctx.meta, "onModify", ctx.key, newVal, oldVal);
         if (shouldRefreshDynamicRateMeta(ctx.key)) {
             refreshHierarchyChainParams();
             invalidateKnobContextCache();
         }
+        refreshHierarchyParamListIfNeeded(false, ctx.key);
         showOverlay(ctx.title, newVal);
         return;
     }
@@ -7116,19 +7741,26 @@ function processPendingHierKnob() {
     /* Calculate step and bounds from metadata */
     const isInt = ctx.meta && ctx.meta.type === "int";
     const defaultStep = isInt ? KNOB_BASE_STEP_INT : KNOB_BASE_STEP_FLOAT;
-    const baseStep = ctx.meta && ctx.meta.step ? ctx.meta.step : defaultStep;
+    const baseStep = ctx.meta && (ctx.meta.increment_knob || ctx.meta.step)
+        ? (ctx.meta.increment_knob || ctx.meta.step)
+        : defaultStep;
     const min = ctx.meta && typeof ctx.meta.min === "number" ? ctx.meta.min : 0;
     const max = ctx.meta && typeof ctx.meta.max === "number" ? ctx.meta.max : 1;
 
-    /* Calculate acceleration based on turn speed */
-    const accel = calcKnobAccel(knobIndex, isInt);
+    /* Calculate acceleration based on turn speed (disabled for Shift+waveform fine edit) */
+    const fineWaveformEdit = isWaveformPositionMeta(ctx.meta) && isShiftHeld();
+    const accel = fineWaveformEdit ? 1 : calcKnobAccel(knobIndex, isInt);
 
     /* Apply accumulated delta with acceleration and clamp */
-    const step = baseStep * accel;
+    const step = getWaveformFineStep(ctx.meta, min, max, baseStep) * accel;
     const newVal = Math.max(min, Math.min(max, num + delta * step));
 
     /* Set the new value */
-    setSlotParam(ctx.slot, ctx.fullKey, formatParamForSet(newVal, ctx.meta));
+    const oldVal = currentVal;
+    const formatted = formatParamForSet(newVal, ctx.meta);
+    setSlotParam(ctx.slot, ctx.fullKey, formatted);
+    callParamCallback(ctx.meta, "onModify", ctx.key, formatted, oldVal);
+    refreshHierarchyParamListIfNeeded(false, ctx.key);
 
     /* Show overlay with new value */
     showKnobOverlay(knobIndex, newVal);
@@ -7146,6 +7778,10 @@ function formatHierDisplayValue(key, val) {
         return val;
     }
 
+    if (meta && meta.type === "bool") {
+        return getBoolDisplayValue(val);
+    }
+
     if (meta && meta.type === "filepath") {
         if (!val) return "";
         const slashIdx = val.lastIndexOf('/');
@@ -7155,19 +7791,1158 @@ function formatHierDisplayValue(key, val) {
     const num = parseFloat(val);
     if (isNaN(num)) return val;
 
-    /* Show as percentage for 0-1 float values */
     if (meta && meta.type === "float") {
-        const min = typeof meta.min === "number" ? meta.min : 0;
-        const max = typeof meta.max === "number" ? meta.max : 1;
-        if (min === 0 && max === 1) {
-            return Math.round(num * 100) + "%";
+        if (meta.raw_type === "percentage") {
+            return `${Math.round(num)}%`;
         }
+        return num.toFixed(2);
     }
     /* For int or other types, show raw value */
     if (meta && meta.type === "int") {
+        if (meta.raw_type === "note") {
+            return formatMidiNoteName(num);
+        }
         return Math.round(num).toString();
     }
     return num.toFixed(2);
+}
+
+function getWaveformSourceKey(meta) {
+    if (!meta || typeof meta !== "object") return "";
+    const keys = [
+        meta.waveform_source_key,
+        meta.waveform_source,
+        meta.filepath_key,
+        meta.source_key
+    ];
+    for (const k of keys) {
+        if (typeof k === "string" && k.trim()) return k.trim();
+    }
+    return "";
+}
+
+function pathExists(path) {
+    if (!path || typeof path !== "string") return false;
+    try {
+        const st = os.stat(path);
+        return !!(st && st[1] === 0);
+    } catch (e) {
+        return false;
+    }
+}
+
+function normalizePathString(path) {
+    if (!path) return "";
+    let p = String(path).trim();
+    if (p.startsWith("file://")) p = p.slice("file://".length);
+    if ((p.startsWith("\"") && p.endsWith("\"")) || (p.startsWith("'") && p.endsWith("'"))) {
+        p = p.slice(1, -1).trim();
+    }
+    return p;
+}
+
+function joinPath(base, leaf) {
+    if (!base) return leaf || "";
+    if (!leaf) return base;
+    const b = String(base).replace(/\/+$/, "");
+    const l = String(leaf).replace(/^\/+/, "");
+    return `${b}/${l}`;
+}
+
+function getWaveformSourcePath(meta) {
+    const sourceKey = getWaveformSourceKey(meta);
+    if (!sourceKey) return "";
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    if (!prefix) return "";
+    const raw = normalizePathString(getSlotParam(hierEditorSlot, `${prefix}:${sourceKey}`) || "");
+    if (!raw) return "";
+    if (raw.startsWith("/") && pathExists(raw)) return raw;
+    if (pathExists(raw)) return raw;
+
+    const sourceMeta = getParamMetadata(sourceKey) || {};
+    const candidates = [];
+    if (sourceMeta.start_path) candidates.push(joinPath(sourceMeta.start_path, raw));
+    if (sourceMeta.root) candidates.push(joinPath(sourceMeta.root, raw));
+
+    for (const c of candidates) {
+        if (pathExists(c)) return c;
+    }
+
+    return raw;
+}
+
+function getBaseName(path) {
+    if (!path) return "";
+    const idx = path.lastIndexOf("/");
+    return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+function toByteArray(content) {
+    if (!content) return null;
+    try {
+        if (content instanceof ArrayBuffer) {
+            return new Uint8Array(content);
+        }
+        if (typeof ArrayBuffer !== "undefined" &&
+            typeof ArrayBuffer.isView === "function" &&
+            ArrayBuffer.isView(content)) {
+            return new Uint8Array(content.buffer, content.byteOffset || 0, content.byteLength || 0);
+        }
+    } catch (e) {
+        /* ignore and fall through to string handling */
+    }
+    if (typeof content === "string") {
+        const bytes = new Uint8Array(content.length);
+        for (let i = 0; i < content.length; i++) {
+            bytes[i] = content.charCodeAt(i) & 0xff;
+        }
+        return bytes;
+    }
+    return null;
+}
+
+function byteAt(bytes, idx) {
+    if (!bytes || idx < 0 || idx >= bytes.length) return 0;
+    return bytes[idx] & 0xff;
+}
+
+function readChunkId(bytes, idx) {
+    return String.fromCharCode(
+        byteAt(bytes, idx),
+        byteAt(bytes, idx + 1),
+        byteAt(bytes, idx + 2),
+        byteAt(bytes, idx + 3)
+    );
+}
+
+function readU16LE(bytes, idx) {
+    return byteAt(bytes, idx) | (byteAt(bytes, idx + 1) << 8);
+}
+
+function readS16LE(bytes, idx) {
+    const v = readU16LE(bytes, idx);
+    return v > 0x7fff ? v - 0x10000 : v;
+}
+
+function readU32LE(bytes, idx) {
+    return (byteAt(bytes, idx) |
+        (byteAt(bytes, idx + 1) << 8) |
+        (byteAt(bytes, idx + 2) << 16) |
+        (byteAt(bytes, idx + 3) << 24)) >>> 0;
+}
+
+function readF32LE(bytes, idx) {
+    if (!bytes || idx < 0 || idx + 4 > bytes.length) return 0;
+    try {
+        const view = new DataView(bytes.buffer, bytes.byteOffset || 0, bytes.byteLength || bytes.length);
+        return view.getFloat32(idx, true);
+    } catch (e) {
+        return 0;
+    }
+}
+
+function findRiffWaveOffset(bytes) {
+    if (!bytes || bytes.length < 12) return -1;
+    if (readChunkId(bytes, 0) === "RIFF" && readChunkId(bytes, 8) === "WAVE") {
+        return 0;
+    }
+    const limit = Math.min(bytes.length - 12, 4096);
+    for (let i = 0; i <= limit; i++) {
+        if (readChunkId(bytes, i) === "RIFF" && readChunkId(bytes, i + 8) === "WAVE") {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function parseWaveformPeaks(content, width) {
+    const bytes = toByteArray(content);
+    if (!bytes || bytes.length < 44) {
+        return { error: "file too small", points: [] };
+    }
+    const riffOffset = findRiffWaveOffset(bytes);
+    if (riffOffset < 0) {
+        return { error: "not a wav file", points: [] };
+    }
+
+    let fmtOffset = -1;
+    let dataOffset = -1;
+    let dataSize = 0;
+    let cursor = riffOffset + 12;
+
+    while (cursor + 8 <= bytes.length) {
+        const chunkId = readChunkId(bytes, cursor);
+        const chunkSize = readU32LE(bytes, cursor + 4);
+        const chunkData = cursor + 8;
+        const chunkEnd = chunkData + chunkSize;
+        const available = Math.max(0, bytes.length - chunkData);
+
+        if (chunkId === "fmt " && available >= 16) {
+            fmtOffset = chunkData;
+        } else if (chunkId === "data") {
+            dataOffset = chunkData;
+            dataSize = Math.min(chunkSize, available);
+            break;
+        }
+
+        if (chunkEnd <= chunkData || chunkEnd > bytes.length) break;
+        cursor = chunkEnd + (chunkSize % 2);
+    }
+
+    if (fmtOffset < 0 || dataOffset < 0 || dataSize <= 0) {
+        return { error: "missing wav chunks", points: [] };
+    }
+
+    const audioFmt = readU16LE(bytes, fmtOffset);
+    const channels = Math.max(1, readU16LE(bytes, fmtOffset + 2));
+    const bits = readU16LE(bytes, fmtOffset + 14);
+    const blockAlign = Math.max(1, readU16LE(bytes, fmtOffset + 12));
+
+    if (audioFmt !== 1 && audioFmt !== 3) {
+        return { error: "unsupported wav codec", points: [] };
+    }
+    if (!((audioFmt === 1 && (bits === 8 || bits === 16)) ||
+          (audioFmt === 3 && bits === 32))) {
+        return { error: "unsupported wav format", points: [] };
+    }
+
+    const sampleBytes = bits / 8;
+    const effectiveBlockAlign = blockAlign > 0 ? blockAlign : Math.max(1, channels * sampleBytes);
+    const frameCount = Math.max(1, Math.floor(dataSize / effectiveBlockAlign));
+    const points = new Array(width).fill(0);
+    const dataEnd = dataOffset + dataSize;
+
+    for (let x = 0; x < width; x++) {
+        const start = Math.floor((x * frameCount) / width);
+        const end = Math.max(start + 1, Math.floor(((x + 1) * frameCount) / width));
+        const span = end - start;
+        const stride = Math.max(1, Math.floor(span / 32));
+        let maxAbs = 0;
+
+        for (let frame = start; frame < end; frame += stride) {
+            const base = dataOffset + frame * effectiveBlockAlign;
+            if (base + sampleBytes > dataEnd) break;
+            let sample = 0;
+            if (audioFmt === 1 && bits === 16) {
+                sample = readS16LE(bytes, base) / 32768;
+            } else if (audioFmt === 1 && bits === 8) {
+                sample = (byteAt(bytes, base) - 128) / 128;
+            } else if (audioFmt === 3 && bits === 32) {
+                sample = readF32LE(bytes, base);
+            }
+            const abs = Math.abs(sample);
+            if (abs > maxAbs) maxAbs = abs;
+        }
+
+        points[x] = Math.max(0, Math.min(1, maxAbs));
+    }
+
+    return { error: "", points };
+}
+
+function getWaveformPreview(path, width) {
+    if (!path) {
+        waveformPreviewCache = { signature: "", path: "", points: [], error: "select a wav file" };
+        return waveformPreviewCache;
+    }
+
+    let signature = `${path}:${width}`;
+    try {
+        const st = os.stat(path);
+        if (st && st[1] === 0 && st[0]) {
+            const size = st[0].size || 0;
+            const mtime = st[0].mtime || 0;
+            signature = `${path}:${size}:${mtime}:${width}`;
+        }
+    } catch (e) {
+        waveformPreviewCache = { signature: "", path, points: [], error: "file not found" };
+        return waveformPreviewCache;
+    }
+
+    if (waveformPreviewCache.signature === signature) {
+        return waveformPreviewCache;
+    }
+
+    let content = null;
+    const readBinaryWithStdOpen = function(filePath) {
+        let file = null;
+        try {
+            const st = os.stat(filePath);
+            if (!st || st[1] !== 0 || !st[0]) return null;
+            const size = Number(st[0].size || 0);
+            if (!(size > 0)) return null;
+
+            file = std.open(filePath, "rb");
+            if (!file) return null;
+
+            const buf = new ArrayBuffer(size);
+            let total = 0;
+            while (total < size) {
+                const n = file.read(buf, total, size - total);
+                if (!(n > 0)) break;
+                total += n;
+            }
+            file.close();
+            file = null;
+
+            if (total <= 0) return null;
+            const full = new Uint8Array(buf);
+            if (total === size) return full;
+            const out = new Uint8Array(total);
+            out.set(full.subarray(0, total));
+            return out;
+        } catch (e) {
+            if (file) {
+                try { file.close(); } catch (closeErr) {}
+            }
+            return null;
+        }
+    };
+
+    try {
+        content = readBinaryWithStdOpen(path);
+        if (!content) {
+            content = std.loadFile(path, "binary");
+            if (!content) {
+                content = std.loadFile(path);
+            }
+        }
+    } catch (e) {
+        content = null;
+    }
+
+    if (!content) {
+        waveformPreviewCache = { signature, path, points: [], error: "unable to read file" };
+        return waveformPreviewCache;
+    }
+
+    const parsed = parseWaveformPeaks(content, width);
+    if (parsed.error) {
+        const sig = `${path}|${parsed.error}`;
+        if (waveformPreviewErrorSignature !== sig) {
+            waveformPreviewErrorSignature = sig;
+            debugLog(`waveform preview parse error: ${parsed.error} path=${path}`);
+        }
+    } else {
+        waveformPreviewErrorSignature = "";
+    }
+    waveformPreviewCache = {
+        signature,
+        path,
+        points: parsed.points || [],
+        error: parsed.error || ""
+    };
+    return waveformPreviewCache;
+}
+
+function sampleWaveformAt(points, idxF) {
+    if (!Array.isArray(points) || points.length === 0) return 0;
+    const len = points.length;
+    const clamped = Math.max(0, Math.min(len - 1, idxF));
+    const i0 = Math.floor(clamped);
+    const i1 = Math.min(len - 1, i0 + 1);
+    const frac = clamped - i0;
+    const a = points[i0] || 0;
+    const b = points[i1] || a;
+    return (a * (1 - frac)) + (b * frac);
+}
+
+function sampleWaveformRange(points, startNorm, endNorm) {
+    if (!Array.isArray(points) || points.length === 0) return 0;
+    const len = points.length;
+    const start = Math.max(0, Math.min(1, startNorm));
+    const end = Math.max(start, Math.min(1, endNorm));
+    const startF = start * (len - 1);
+    const endF = end * (len - 1);
+    const span = Math.max(0, endF - startF);
+
+    if (span < 0.5) {
+        return sampleWaveformAt(points, (startF + endF) * 0.5);
+    }
+
+    const steps = Math.min(32, Math.max(8, Math.ceil(span)));
+    let maxAmp = 0;
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const amp = sampleWaveformAt(points, startF + span * t);
+        if (amp > maxAmp) maxAmp = amp;
+    }
+    return Math.max(0, Math.min(1, maxAmp));
+}
+
+function drawWaveformPositionEditor(selectedKey, selectedMeta) {
+    hideOverlay();
+
+    const fullKey = buildHierarchyParamKey(selectedKey);
+    const usingStableEditVal = hierEditorEditMode &&
+        hierEditorEditKey === fullKey &&
+        hierEditorEditValue !== null;
+    const rawVal = usingStableEditVal ? String(hierEditorEditValue) : getSlotParam(hierEditorSlot, fullKey);
+    const parsed = parseFloat(rawVal);
+    const minPos = (selectedMeta && typeof selectedMeta.min === "number") ? selectedMeta.min : 0;
+    const maxPos = (selectedMeta && typeof selectedMeta.max === "number") ? selectedMeta.max : 1;
+    const posRange = Math.max(0.000001, maxPos - minPos);
+    const positionVal = Number.isFinite(parsed) ? Math.max(minPos, Math.min(maxPos, parsed)) : minPos;
+    const position = (positionVal - minPos) / posRange; // normalized 0..1 for waveform cursor/rendering
+
+    const sourcePath = getWaveformSourcePath(selectedMeta);
+    const shiftHeld = isShiftHeld();
+    const zoomWindow = shiftHeld ? 0.1 : 1.0;
+    const zoomStart = Math.max(0, Math.min(1 - zoomWindow, position - (zoomWindow / 2)));
+    const zoomEnd = zoomStart + zoomWindow;
+    const zoomRange = Math.max(0.000001, zoomEnd - zoomStart);
+    const plotX = 3;
+    const plotY = 12;
+    const plotW = 122;
+    const plotH = 40;
+    const innerW = plotW - 2;
+    const midY = plotY + Math.floor(plotH / 2);
+
+    const label = selectedMeta && (selectedMeta.label || selectedMeta.name)
+        ? String(selectedMeta.label || selectedMeta.name)
+        : selectedKey;
+    const valueText = `${(position * 100).toFixed(2)}%${shiftHeld ? " [fine]" : ""}  ${getBaseName(sourcePath) || "(no file)"}`;
+    const labelX = Math.max(0, Math.floor((SCREEN_WIDTH - label.length * 5) / 2));
+    const valueX = Math.max(0, Math.floor((SCREEN_WIDTH - valueText.length * 5) / 2));
+
+    print(labelX, 2, truncateText(label, 24), 1);
+
+    draw_rect(plotX, plotY, plotW, plotH, 1);
+
+    const previewWidth = Math.max(1024, innerW * (shiftHeld ? 24 : 8));
+    const preview = getWaveformPreview(sourcePath, previewWidth);
+    if (preview.error || preview.points.length === 0) {
+        const msg = preview.error || "no waveform";
+        const msgX = Math.max(0, Math.floor((SCREEN_WIDTH - msg.length * 5) / 2));
+        print(msgX, 30, truncateText(msg, 24), 1);
+    } else {
+        const points = preview.points;
+        for (let i = 0; i < innerW; i++) {
+            const colStartNorm = zoomStart + ((i / innerW) * zoomRange);
+            const colEndNorm = zoomStart + (((i + 1) / innerW) * zoomRange);
+            const amp = sampleWaveformRange(points, colStartNorm, colEndNorm);
+            const half = Math.floor(amp * (plotH - 4) / 2);
+            if (half <= 0) continue;
+            const x = plotX + 1 + i;
+            const top = Math.max(plotY + 1, midY - half);
+            const bottom = Math.min(plotY + plotH - 2, midY + half);
+
+            // Solid waveform fill.
+            for (let y = top; y <= bottom; y++) {
+                set_pixel(x, y, 1);
+            }
+        }
+    }
+
+    const cursorNorm = Math.max(0, Math.min(1, (position - zoomStart) / zoomRange));
+    const cursorX = plotX + 1 + Math.round(cursorNorm * (innerW - 1));
+    for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
+        set_pixel(cursorX, y, 1);
+    }
+
+    print(valueX, 56, truncateText(valueText, 24), 1);
+}
+
+function resetCanvasState() {
+    canvasParamKey = "";
+    canvasParamMeta = null;
+    canvasRuntime = null;
+}
+
+function getHierarchyActiveModuleId() {
+    if (hierEditorSlot < 0 || !hierEditorComponent) return "";
+    if (hierEditorIsMasterFx) {
+        return getSlotParam(0, `${hierEditorComponent}:module`) || "";
+    }
+
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    if (!prefix) return "";
+    return getSlotParam(hierEditorSlot, `${prefix}_module`) || "";
+}
+
+function getHierarchyCanvasModuleId() {
+    return getHierarchyActiveModuleId();
+}
+
+function getModuleBasePath(moduleId) {
+    if (!moduleId) return "";
+    const searchDirs = [
+        `${MODULES_ROOT}/${moduleId}`,
+        `${MODULES_ROOT}/sound_generators/${moduleId}`,
+        `${MODULES_ROOT}/audio_fx/${moduleId}`,
+        `${MODULES_ROOT}/midi_fx/${moduleId}`,
+        `${MODULES_ROOT}/utilities/${moduleId}`,
+        `${MODULES_ROOT}/tools/${moduleId}`,
+        `${MODULES_ROOT}/other/${moduleId}`
+    ];
+    for (const dir of searchDirs) {
+        if (pathExists(`${dir}/module.json`)) return dir;
+    }
+    return "";
+}
+
+function resolveCanvasScriptPath(meta) {
+    const moduleId = getHierarchyCanvasModuleId();
+    const moduleDir = getModuleBasePath(moduleId);
+    if (!moduleDir) return { scriptPath: "", overlayRef: "" };
+
+    let scriptSpec = "canvas.js";
+    let overlayRef = "";
+    if (meta && meta.canvas_script !== undefined) {
+        if (typeof meta.canvas_script === "string") {
+            scriptSpec = meta.canvas_script.trim() || "canvas.js";
+        } else if (meta.canvas_script && typeof meta.canvas_script === "object") {
+            scriptSpec = String(meta.canvas_script.script || meta.canvas_script.file || meta.canvas_script.path || "canvas.js");
+            if (typeof meta.canvas_script.overlay === "string" && meta.canvas_script.overlay.trim()) {
+                overlayRef = meta.canvas_script.overlay.trim();
+            } else if (typeof meta.canvas_script.target === "string" && meta.canvas_script.target.trim()) {
+                overlayRef = meta.canvas_script.target.trim();
+            } else if (typeof meta.canvas_script.entry === "string" && meta.canvas_script.entry.trim()) {
+                overlayRef = meta.canvas_script.entry.trim();
+            } else if (typeof meta.canvas_script.element === "string" && meta.canvas_script.element.trim()) {
+                overlayRef = meta.canvas_script.element.trim();
+            }
+        }
+    }
+
+    if (meta && typeof meta.canvas_overlay === "string" && meta.canvas_overlay.trim()) {
+        overlayRef = meta.canvas_overlay.trim();
+    } else if (meta && typeof meta.overlay === "string" && meta.overlay.trim()) {
+        overlayRef = meta.overlay.trim();
+    } else if (meta && typeof meta.canvas_target === "string" && meta.canvas_target.trim()) {
+        overlayRef = meta.canvas_target.trim();
+    }
+
+    const parsedSpec = parseOverlayScriptSpec(scriptSpec, "canvas.js");
+    const scriptRef = parsedSpec.scriptRef;
+    if (!overlayRef && parsedSpec.overlayRef) {
+        overlayRef = parsedSpec.overlayRef;
+    }
+
+    const scriptPath = scriptRef.startsWith("/") ? scriptRef : `${moduleDir}/${scriptRef}`;
+    return {
+        scriptPath: pathExists(scriptPath) ? scriptPath : "",
+        overlayRef
+    };
+}
+
+function parsePositiveTimeoutMs(value, fallbackMs) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallbackMs;
+    if (num <= 0) return 0;
+    return Math.max(1000, Math.floor(num * 1000));
+}
+
+function resolveOverlayScriptPath(moduleId, scriptRef, fallbackName) {
+    const moduleDir = getModuleBasePath(moduleId);
+    if (!moduleDir) return "";
+    const ref = (typeof scriptRef === "string" && scriptRef.trim())
+        ? scriptRef.trim()
+        : fallbackName;
+    const scriptPath = ref.startsWith("/") ? ref : `${moduleDir}/${ref}`;
+    return pathExists(scriptPath) ? scriptPath : "";
+}
+
+function parseOverlayScriptSpec(value, fallbackScript) {
+    const fallback = (typeof fallbackScript === "string" && fallbackScript.trim())
+        ? fallbackScript.trim()
+        : "";
+    const raw = (typeof value === "string" && value.trim())
+        ? value.trim()
+        : fallback;
+    if (!raw) return { scriptRef: "", overlayRef: "" };
+
+    const hashPos = raw.indexOf("#");
+    if (hashPos < 0) {
+        return { scriptRef: raw, overlayRef: "" };
+    }
+
+    const scriptRef = raw.slice(0, hashPos).trim() || fallback;
+    const overlayRef = raw.slice(hashPos + 1).trim();
+    return { scriptRef, overlayRef };
+}
+
+function getObjectPathValue(root, pathRef) {
+    if (!root || !pathRef || typeof pathRef !== "string") return undefined;
+    const parts = pathRef.split(".").map(function(part) { return part.trim(); }).filter(Boolean);
+    if (parts.length === 0) return undefined;
+
+    let cur = root;
+    for (const part of parts) {
+        if (!cur || (typeof cur !== "object" && typeof cur !== "function")) return undefined;
+        cur = cur[part];
+    }
+    return cur;
+}
+
+function resolveOverlayObject(candidate) {
+    if (!candidate) return { overlay: null, error: "" };
+    if (typeof candidate === "function") {
+        try {
+            const built = candidate();
+            if (built && typeof built === "object") return { overlay: built, error: "" };
+            return { overlay: null, error: "overlay factory returned invalid value" };
+        } catch (e) {
+            return { overlay: null, error: String(e) };
+        }
+    }
+    if (candidate && typeof candidate === "object") {
+        return { overlay: candidate, error: "" };
+    }
+    return { overlay: null, error: "" };
+}
+
+function resolveOverlayFromGlobals(overlayRef, fallbackCandidates, missingMessage) {
+    const seen = new Set();
+    const candidates = [];
+    let firstError = "";
+
+    const pushCandidate = function(value) {
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        candidates.push(value);
+    };
+
+    if (overlayRef && typeof overlayRef === "string" && overlayRef.trim()) {
+        const key = overlayRef.trim();
+        pushCandidate(getObjectPathValue(globalThis, key));
+        pushCandidate(globalThis[key]);
+        pushCandidate(getObjectPathValue(globalThis.canvas_overlays, key));
+        pushCandidate(getObjectPathValue(globalThis.visualizer_overlays, key));
+        pushCandidate(getObjectPathValue(globalThis.canvas_overlay, key));
+        pushCandidate(getObjectPathValue(globalThis.visualizer_overlay, key));
+    }
+
+    if (Array.isArray(fallbackCandidates)) {
+        for (const candidate of fallbackCandidates) pushCandidate(candidate);
+    }
+
+    for (const candidate of candidates) {
+        const resolved = resolveOverlayObject(candidate);
+        if (resolved.overlay) return { overlay: resolved.overlay, error: "" };
+        if (!firstError && resolved.error) firstError = resolved.error;
+    }
+
+    if (firstError) return { overlay: null, error: firstError };
+    if (overlayRef && typeof overlayRef === "string" && overlayRef.trim()) {
+        return { overlay: null, error: `overlay not found: ${overlayRef.trim()}` };
+    }
+    return { overlay: null, error: missingMessage };
+}
+
+function getHierarchyVisualizerConfig() {
+    const moduleId = getHierarchyActiveModuleId();
+    if (!moduleId) return null;
+
+    const moduleDir = getModuleBasePath(moduleId);
+    if (!moduleDir) return null;
+
+    const moduleJson = safeLoadJson(`${moduleDir}/module.json`);
+    if (!moduleJson || typeof moduleJson !== "object") return null;
+
+    const capabilities = (moduleJson.capabilities && typeof moduleJson.capabilities === "object")
+        ? moduleJson.capabilities
+        : {};
+    const visSpec = capabilities.visualizer !== undefined ? capabilities.visualizer : moduleJson.visualizer;
+    if (visSpec === undefined || visSpec === null) return null;
+
+    let scriptSpec = "";
+    let overlayRef = "";
+    let timeoutMs = 0;
+    if (typeof visSpec === "string") {
+        scriptSpec = visSpec;
+    } else if (visSpec && typeof visSpec === "object") {
+        scriptSpec = String(visSpec.script || visSpec.file || visSpec.path || "visualizer.js");
+        if (typeof visSpec.overlay === "string" && visSpec.overlay.trim()) {
+            overlayRef = visSpec.overlay.trim();
+        } else if (typeof visSpec.target === "string" && visSpec.target.trim()) {
+            overlayRef = visSpec.target.trim();
+        } else if (typeof visSpec.entry === "string" && visSpec.entry.trim()) {
+            overlayRef = visSpec.entry.trim();
+        } else if (typeof visSpec.element === "string" && visSpec.element.trim()) {
+            overlayRef = visSpec.element.trim();
+        }
+        timeoutMs = parsePositiveTimeoutMs(
+            visSpec.timeout_sec !== undefined ? visSpec.timeout_sec :
+            (visSpec.timeout !== undefined ? visSpec.timeout : visSpec.idle_timeout_sec),
+            0
+        );
+    }
+
+    const parsedSpec = parseOverlayScriptSpec(scriptSpec, "visualizer.js");
+    const scriptRef = parsedSpec.scriptRef;
+    if (!overlayRef && parsedSpec.overlayRef) {
+        overlayRef = parsedSpec.overlayRef;
+    }
+    if (!scriptRef) return null;
+    if (timeoutMs <= 0) {
+        timeoutMs = parsePositiveTimeoutMs(
+            capabilities.visualizer_timeout_sec !== undefined ? capabilities.visualizer_timeout_sec :
+            (capabilities.visualizer_timeout !== undefined ? capabilities.visualizer_timeout :
+                (moduleJson.visualizer_timeout_sec !== undefined ? moduleJson.visualizer_timeout_sec : moduleJson.visualizer_timeout)),
+            15000
+        );
+    }
+    if (timeoutMs <= 0) return null;
+
+    const scriptPath = resolveOverlayScriptPath(moduleId, scriptRef, "visualizer.js");
+    if (!scriptPath) {
+        debugLog(`visualizer script not found for ${moduleId}: ${scriptRef}`);
+        return null;
+    }
+
+    return {
+        moduleId,
+        scriptPath,
+        overlayRef,
+        timeoutMs
+    };
+}
+
+function loadCanvasOverlayScript(scriptPath, overlayRef) {
+    if (!scriptPath || typeof shadow_load_ui_module !== "function") {
+        return { overlay: null, error: "canvas script unavailable" };
+    }
+
+    const savedInit = globalThis.init;
+    const savedTick = globalThis.tick;
+    const savedMidiInternal = globalThis.onMidiMessageInternal;
+    const savedMidiExternal = globalThis.onMidiMessageExternal;
+    const hadCanvasOverlay = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlay");
+    const hadCanvasOverlays = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlays");
+    const hadVisualizerOverlay = Object.prototype.hasOwnProperty.call(globalThis, "visualizer_overlay");
+    const hadVisualizerOverlays = Object.prototype.hasOwnProperty.call(globalThis, "visualizer_overlays");
+    const savedCanvasOverlay = globalThis.canvas_overlay;
+    const savedCanvasOverlays = globalThis.canvas_overlays;
+    const savedVisualizerOverlay = globalThis.visualizer_overlay;
+    const savedVisualizerOverlays = globalThis.visualizer_overlays;
+
+    let ok = false;
+    let loadError = "";
+    try {
+        ok = shadow_load_ui_module(scriptPath);
+    } catch (e) {
+        ok = false;
+        loadError = String(e);
+    }
+
+    const resolved = resolveOverlayFromGlobals(
+        overlayRef,
+        [globalThis.canvas_overlay],
+        "canvas script missing globalThis.canvas_overlay"
+    );
+    globalThis.init = savedInit;
+    globalThis.tick = savedTick;
+    globalThis.onMidiMessageInternal = savedMidiInternal;
+    globalThis.onMidiMessageExternal = savedMidiExternal;
+    if (hadCanvasOverlay) {
+        globalThis.canvas_overlay = savedCanvasOverlay;
+    } else {
+        delete globalThis.canvas_overlay;
+    }
+    if (hadCanvasOverlays) {
+        globalThis.canvas_overlays = savedCanvasOverlays;
+    } else {
+        delete globalThis.canvas_overlays;
+    }
+    if (hadVisualizerOverlay) {
+        globalThis.visualizer_overlay = savedVisualizerOverlay;
+    } else {
+        delete globalThis.visualizer_overlay;
+    }
+    if (hadVisualizerOverlays) {
+        globalThis.visualizer_overlays = savedVisualizerOverlays;
+    } else {
+        delete globalThis.visualizer_overlays;
+    }
+
+    if (!ok) {
+        return { overlay: null, error: loadError || "failed to load canvas script" };
+    }
+    if (!resolved.overlay) {
+        return { overlay: null, error: resolved.error || "canvas script missing overlay object" };
+    }
+
+    return { overlay: resolved.overlay, error: "" };
+}
+
+function createCanvasRuntimeContext() {
+    const fullCanvasKey = canvasParamKey ? buildHierarchyParamKey(canvasParamKey) : "";
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const toFullParam = function(key) {
+        if (!key || typeof key !== "string") return "";
+        if (key.includes(":")) return key;
+        return prefix ? `${prefix}:${key}` : key;
+    };
+
+    return {
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+        state: canvasRuntime ? canvasRuntime.state : {},
+        clear() { clear_screen(); },
+        setPixel(x, y, value) {
+            set_pixel(Math.round(x), Math.round(y), value ? 1 : 0);
+        },
+        drawRect(x, y, w, h, value) {
+            draw_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0);
+        },
+        fillRect(x, y, w, h, value) {
+            fill_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0);
+        },
+        drawLine(x1, y1, x2, y2, value) {
+            if (display && typeof display.drawLine === "function") {
+                display.drawLine(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
+            }
+        },
+        print(x, y, text, color = 1) {
+            print(Math.round(x), Math.round(y), String(text), color ? 1 : 0);
+        },
+        now() { return Date.now(); },
+        random() { return Math.random(); },
+        getValue() {
+            if (!fullCanvasKey) return "";
+            return getSlotParam(hierEditorSlot, fullCanvasKey) || "";
+        },
+        setValue(value) {
+            if (!fullCanvasKey) return false;
+            return setSlotParam(hierEditorSlot, fullCanvasKey, String(value));
+        },
+        getParam(key) {
+            const full = toFullParam(key);
+            if (!full) return null;
+            return getSlotParam(hierEditorSlot, full);
+        },
+        setParam(key, value) {
+            const full = toFullParam(key);
+            if (!full) return false;
+            return setSlotParam(hierEditorSlot, full, String(value));
+        },
+        sourcePath() {
+            return canvasRuntime ? (canvasRuntime.scriptPath || "") : "";
+        }
+    };
+}
+
+function invokeCanvasOverlayHook(hookName, payload) {
+    if (!canvasRuntime || !canvasRuntime.overlay) return false;
+    const fn = canvasRuntime.overlay[hookName];
+    if (typeof fn !== "function") return false;
+    try {
+        fn(canvasRuntime.ctx, payload || {});
+    } catch (e) {
+        canvasRuntime.error = `${hookName} error: ${e}`;
+        debugLog(`canvas ${hookName} hook error: ${e}`);
+    }
+    return true;
+}
+
+function dispatchCanvasMidi(data, source) {
+    if (view !== VIEWS.CANVAS) return false;
+    const midi = Array.isArray(data) ? data.slice() : Array.from(data || []);
+    if (!midi || midi.length === 0) return true;
+
+    if (canvasParamMeta) {
+        callParamCallback(canvasParamMeta, "onMidi", canvasParamKey, { source, data: midi }, null);
+    }
+
+    invokeCanvasOverlayHook("onMidi", { source, data: midi });
+    return true;
+}
+
+function openCanvasPreview(paramKey, meta) {
+    resetCanvasState();
+    canvasParamKey = paramKey || "";
+    canvasParamMeta = meta || null;
+    canvasRuntime = {
+        moduleId: getHierarchyCanvasModuleId(),
+        scriptPath: "",
+        overlayRef: "",
+        overlay: null,
+        state: {},
+        ctx: null,
+        error: ""
+    };
+
+    const scriptSpec = resolveCanvasScriptPath(meta);
+    canvasRuntime.scriptPath = scriptSpec.scriptPath;
+    canvasRuntime.overlayRef = scriptSpec.overlayRef || "";
+    if (canvasRuntime.scriptPath) {
+        const loaded = loadCanvasOverlayScript(canvasRuntime.scriptPath, canvasRuntime.overlayRef);
+        canvasRuntime.overlay = loaded.overlay;
+        canvasRuntime.error = loaded.error || "";
+    } else {
+        canvasRuntime.error = "No canvas script found";
+    }
+    canvasRuntime.ctx = createCanvasRuntimeContext();
+    invokeCanvasOverlayHook("onOpen", {
+        param_key: canvasParamKey,
+        module_id: canvasRuntime.moduleId,
+        script_path: canvasRuntime.scriptPath,
+        overlay_ref: canvasRuntime.overlayRef
+    });
+
+    setView(VIEWS.CANVAS);
+    hideOverlay();
+    announce(`${meta && (meta.label || meta.name) ? (meta.label || meta.name) : "Canvas"} preview`);
+    needsRedraw = true;
+}
+
+function closeCanvasPreview(cancelled) {
+    if (!canvasParamKey) {
+        resetCanvasState();
+        setView(VIEWS.HIERARCHY_EDITOR);
+        needsRedraw = true;
+        return;
+    }
+
+    const key = canvasParamKey;
+    const meta = canvasParamMeta;
+    invokeCanvasOverlayHook("onClose", { cancelled: !!cancelled });
+    invokeCanvasOverlayHook("onExit", { cancelled: !!cancelled });
+    callParamCallback(meta, cancelled ? "onCancel" : "onExit", key, cancelled ? null : "close", null);
+    resetCanvasState();
+    setView(VIEWS.HIERARCHY_EDITOR);
+    needsRedraw = true;
+}
+
+function tickCanvasPreview() {
+    if (view !== VIEWS.CANVAS) return;
+    invokeCanvasOverlayHook("tick", {});
+}
+
+function drawCanvasPreview() {
+    clear_screen();
+    const drew = invokeCanvasOverlayHook("draw", {});
+    if (!drew) {
+        const title = canvasParamMeta && (canvasParamMeta.label || canvasParamMeta.name)
+            ? String(canvasParamMeta.label || canvasParamMeta.name)
+            : "Canvas";
+        const message = canvasRuntime && canvasRuntime.error ? canvasRuntime.error : "No module canvas overlay";
+        print(Math.max(0, Math.floor((SCREEN_WIDTH - title.length * 5) / 2)), 10, truncateText(title, 24), 1);
+        print(3, 29, truncateText(message, 24), 1);
+        print(3, 50, "Click/Back: return", 1);
+    }
+}
+
+function resetHierarchyVisualizerSession() {
+    hierarchyVisualizerConfig = null;
+    hierarchyVisualizerRuntime = null;
+    hierarchyVisualizerLastControlMs = Date.now();
+}
+
+function refreshHierarchyVisualizerConfig() {
+    hierarchyVisualizerConfig = getHierarchyVisualizerConfig();
+    hierarchyVisualizerRuntime = null;
+    hierarchyVisualizerLastControlMs = Date.now();
+}
+
+function isHierarchyVisualizerControlInput(status, d1, d2) {
+    if ((status & 0xF0) === 0xB0) return true;
+    if ((status & 0xF0) === MidiNoteOn && d2 > 0 &&
+        d1 >= MoveKnob1Touch && d1 <= MoveKnob8Touch) {
+        return true;
+    }
+    return false;
+}
+
+function loadVisualizerOverlayScript(scriptPath, overlayRef) {
+    if (!scriptPath || typeof shadow_load_ui_module !== "function") {
+        return { overlay: null, error: "visualizer script unavailable" };
+    }
+
+    const savedInit = globalThis.init;
+    const savedTick = globalThis.tick;
+    const savedMidiInternal = globalThis.onMidiMessageInternal;
+    const savedMidiExternal = globalThis.onMidiMessageExternal;
+    const hadVisualizerOverlay = Object.prototype.hasOwnProperty.call(globalThis, "visualizer_overlay");
+    const hadCanvasOverlay = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlay");
+    const hadVisualizerOverlays = Object.prototype.hasOwnProperty.call(globalThis, "visualizer_overlays");
+    const hadCanvasOverlays = Object.prototype.hasOwnProperty.call(globalThis, "canvas_overlays");
+    const savedVisualizerOverlay = globalThis.visualizer_overlay;
+    const savedCanvasOverlay = globalThis.canvas_overlay;
+    const savedVisualizerOverlays = globalThis.visualizer_overlays;
+    const savedCanvasOverlays = globalThis.canvas_overlays;
+
+    let ok = false;
+    let loadError = "";
+    try {
+        ok = shadow_load_ui_module(scriptPath);
+    } catch (e) {
+        ok = false;
+        loadError = String(e);
+    }
+
+    const resolved = resolveOverlayFromGlobals(
+        overlayRef,
+        [globalThis.visualizer_overlay, globalThis.canvas_overlay],
+        "visualizer script missing overlay object"
+    );
+    globalThis.init = savedInit;
+    globalThis.tick = savedTick;
+    globalThis.onMidiMessageInternal = savedMidiInternal;
+    globalThis.onMidiMessageExternal = savedMidiExternal;
+    if (hadVisualizerOverlay) globalThis.visualizer_overlay = savedVisualizerOverlay;
+    else delete globalThis.visualizer_overlay;
+    if (hadCanvasOverlay) globalThis.canvas_overlay = savedCanvasOverlay;
+    else delete globalThis.canvas_overlay;
+    if (hadVisualizerOverlays) globalThis.visualizer_overlays = savedVisualizerOverlays;
+    else delete globalThis.visualizer_overlays;
+    if (hadCanvasOverlays) globalThis.canvas_overlays = savedCanvasOverlays;
+    else delete globalThis.canvas_overlays;
+
+    if (!ok) {
+        return { overlay: null, error: loadError || "failed to load visualizer script" };
+    }
+    if (!resolved.overlay) {
+        return { overlay: null, error: resolved.error || "visualizer script missing overlay object" };
+    }
+    return { overlay: resolved.overlay, error: "" };
+}
+
+function createHierarchyVisualizerContext() {
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const toFullParam = function(key) {
+        if (!key || typeof key !== "string") return "";
+        if (key.includes(":")) return key;
+        return prefix ? `${prefix}:${key}` : key;
+    };
+
+    return {
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+        state: hierarchyVisualizerRuntime ? hierarchyVisualizerRuntime.state : {},
+        clear() { clear_screen(); },
+        setPixel(x, y, value) {
+            set_pixel(Math.round(x), Math.round(y), value ? 1 : 0);
+        },
+        drawRect(x, y, w, h, value) {
+            draw_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0);
+        },
+        fillRect(x, y, w, h, value) {
+            fill_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0);
+        },
+        drawLine(x1, y1, x2, y2, value) {
+            if (display && typeof display.drawLine === "function") {
+                display.drawLine(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
+            }
+        },
+        print(x, y, text, color = 1) {
+            print(Math.round(x), Math.round(y), String(text), color ? 1 : 0);
+        },
+        now() { return Date.now(); },
+        random() { return Math.random(); },
+        getParam(key) {
+            const full = toFullParam(key);
+            if (!full) return null;
+            return getSlotParam(hierEditorSlot, full);
+        },
+        setParam(key, value) {
+            const full = toFullParam(key);
+            if (!full) return false;
+            return setSlotParam(hierEditorSlot, full, String(value));
+        },
+        sourcePath() {
+            return hierarchyVisualizerRuntime ? (hierarchyVisualizerRuntime.scriptPath || "") : "";
+        }
+    };
+}
+
+function invokeHierarchyVisualizerHook(hookName, payload) {
+    if (!hierarchyVisualizerRuntime || !hierarchyVisualizerRuntime.overlay) return false;
+    const fn = hierarchyVisualizerRuntime.overlay[hookName];
+    if (typeof fn !== "function") return false;
+    try {
+        fn(hierarchyVisualizerRuntime.ctx, payload || {});
+    } catch (e) {
+        hierarchyVisualizerRuntime.error = `${hookName} error: ${e}`;
+        debugLog(`visualizer ${hookName} hook error: ${e}`);
+    }
+    return true;
+}
+
+function openHierarchyVisualizer() {
+    if (view !== VIEWS.HIERARCHY_EDITOR || !hierarchyVisualizerConfig) return false;
+
+    hierarchyVisualizerRuntime = {
+        moduleId: hierarchyVisualizerConfig.moduleId,
+        scriptPath: hierarchyVisualizerConfig.scriptPath,
+        overlayRef: hierarchyVisualizerConfig.overlayRef || "",
+        overlay: null,
+        state: {},
+        ctx: null,
+        error: ""
+    };
+
+    const loaded = loadVisualizerOverlayScript(
+        hierarchyVisualizerConfig.scriptPath,
+        hierarchyVisualizerRuntime.overlayRef
+    );
+    hierarchyVisualizerRuntime.overlay = loaded.overlay;
+    hierarchyVisualizerRuntime.error = loaded.error || "";
+    hierarchyVisualizerRuntime.ctx = createHierarchyVisualizerContext();
+    invokeHierarchyVisualizerHook("onOpen", {
+        module_id: hierarchyVisualizerRuntime.moduleId,
+        script_path: hierarchyVisualizerRuntime.scriptPath,
+        overlay_ref: hierarchyVisualizerRuntime.overlayRef
+    });
+
+    setView(VIEWS.VISUALIZER);
+    hideOverlay();
+    needsRedraw = true;
+    return true;
+}
+
+function closeHierarchyVisualizer(reason) {
+    if (!hierarchyVisualizerRuntime && view !== VIEWS.VISUALIZER) return false;
+
+    invokeHierarchyVisualizerHook("onClose", { reason: reason || "close" });
+    invokeHierarchyVisualizerHook("onExit", { reason: reason || "close" });
+    hierarchyVisualizerRuntime = null;
+    hierarchyVisualizerLastControlMs = Date.now();
+
+    if (view === VIEWS.VISUALIZER) {
+        setView(VIEWS.HIERARCHY_EDITOR);
+    } else {
+        needsRedraw = true;
+    }
+    return true;
+}
+
+function tickHierarchyVisualizer() {
+    if (view !== VIEWS.VISUALIZER) return;
+    invokeHierarchyVisualizerHook("tick", {});
+}
+
+function drawHierarchyVisualizer() {
+    clear_screen();
+    const drew = invokeHierarchyVisualizerHook("draw", {});
+    if (!drew) {
+        const title = "Visualizer";
+        const message = hierarchyVisualizerRuntime && hierarchyVisualizerRuntime.error
+            ? hierarchyVisualizerRuntime.error
+            : "No visualizer overlay";
+        print(Math.max(0, Math.floor((SCREEN_WIDTH - title.length * 5) / 2)), 10, title, 1);
+        print(3, 29, truncateText(message, 24), 1);
+    }
+}
+
+function dispatchHierarchyVisualizerMidi(data, source) {
+    if (view !== VIEWS.VISUALIZER) return false;
+    const midi = Array.isArray(data) ? data.slice() : Array.from(data || []);
+    if (!midi || midi.length === 0) return true;
+    invokeHierarchyVisualizerHook("onMidi", { source, data: midi });
+    return true;
+}
+
+function tickHierarchyVisualizerIdle() {
+    if (view !== VIEWS.HIERARCHY_EDITOR) return;
+    if (!hierarchyVisualizerConfig || hierarchyVisualizerRuntime) return;
+    if (isTextEntryActive() || warningActive || filepathBrowserState) return;
+    const now = Date.now();
+    if (!hierarchyVisualizerLastControlMs) hierarchyVisualizerLastControlMs = now;
+    if ((now - hierarchyVisualizerLastControlMs) >= hierarchyVisualizerConfig.timeoutMs) {
+        openHierarchyVisualizer();
+    }
 }
 
 /* Draw filepath browser for filepath chain params */
@@ -7210,6 +8985,20 @@ function drawFilepathBrowser() {
 /* Draw the hierarchy-based parameter editor */
 function drawHierarchyEditor() {
     clear_screen();
+
+    if (hierEditorEditMode &&
+        hierEditorSelectedIdx >= 0 &&
+        hierEditorSelectedIdx < hierEditorParams.length) {
+        const selectedParam = hierEditorParams[hierEditorSelectedIdx];
+        const selectedKey = (selectedParam && typeof selectedParam === "object")
+            ? (selectedParam.key || selectedParam)
+            : selectedParam;
+        const selectedMeta = selectedKey ? getParamMetadata(selectedKey) : null;
+        if (selectedMeta && selectedMeta.raw_type === "waveform_position") {
+            drawWaveformPositionEditor(selectedKey, selectedMeta);
+            return;
+        }
+    }
 
     /* Get plugin info */
     const prefix = getComponentParamPrefix(hierEditorComponent);
@@ -7899,6 +9688,12 @@ function handleJog(delta) {
                     announceMenuItem(param.label || param.key, param.value || "");
                 }
             }
+            break;
+        case VIEWS.CANVAS:
+            /* Canvas animation is autonomous; jog ignored. */
+            break;
+        case VIEWS.VISUALIZER:
+            /* Any control input should close visualizer; handled in MIDI path. */
             break;
         case VIEWS.FILEPATH_BROWSER:
             if (filepathBrowserState) {
@@ -8609,18 +10404,58 @@ function handleSelect() {
                         openDynamicParamPicker(selectedKey, meta);
                     } else if (!hierEditorEditMode && meta && meta.type === "filepath") {
                         openHierarchyFilepathBrowser(selectedKey, meta);
+                    } else if (!hierEditorEditMode && meta && meta.type === "string") {
+                        const fullKey = buildHierarchyParamKey(selectedKey);
+                        const existingVal = getSlotParam(hierEditorSlot, fullKey) || "";
+                        callParamCallback(meta, "onEnter", selectedKey, existingVal, existingVal);
+                        openTextEntry({
+                            title: meta.label || meta.name || selectedKey,
+                            initialText: String(existingVal),
+                            onAnnounce: announce,
+                            onConfirm: (nextText) => {
+                                setSlotParam(hierEditorSlot, fullKey, String(nextText));
+                                callParamCallback(meta, "onModify", selectedKey, String(nextText), existingVal);
+                                callParamCallback(meta, "onExit", selectedKey, String(nextText), existingVal);
+                                refreshHierarchyParamListIfNeeded(false, selectedKey);
+                                announceParameter(meta.label || meta.name || selectedKey, String(nextText));
+                                needsRedraw = true;
+                            },
+                            onCancel: () => {
+                                callParamCallback(meta, "onCancel", selectedKey, existingVal, existingVal);
+                                needsRedraw = true;
+                            }
+                        });
+                    } else if (!hierEditorEditMode && meta && meta.type === "button") {
+                        const fullKey = buildHierarchyParamKey(selectedKey);
+                        setSlotParam(hierEditorSlot, fullKey, "trigger");
+                        callParamCallback(meta, "onModify", selectedKey, "trigger", null);
+                        announceParameter(meta.label || meta.name || selectedKey, "Triggered");
+                    } else if (!hierEditorEditMode && meta && meta.type === "canvas") {
+                        callParamCallback(meta, "onEnter", selectedKey, "open", null);
+                        openCanvasPreview(selectedKey, meta);
                     } else {
                         if (!hierEditorEditMode) {
                             if (beginHierarchyParamEdit(selectedKey)) {
                                 hierEditorEditMode = true;
                             }
                         } else {
+                            const before = hierEditorEditOriginalValue;
+                            const after = hierEditorEditValue;
+                            callParamCallback(meta, "onExit", selectedKey, after, before);
                             hierEditorEditMode = false;
                             resetHierarchyEditState();
                         }
                     }
                 }
             }
+            break;
+        case VIEWS.CANVAS:
+            closeCanvasPreview(false);
+            announce("Hierarchy Editor");
+            break;
+        case VIEWS.VISUALIZER:
+            closeHierarchyVisualizer("select");
+            announce("Hierarchy Editor");
             break;
         case VIEWS.FILEPATH_BROWSER:
             if (!filepathBrowserState) {
@@ -9142,6 +10977,16 @@ function handleBack() {
             }
             needsRedraw = true;
             break;
+        case VIEWS.CANVAS:
+            closeCanvasPreview(true);
+            announce("Hierarchy Editor");
+            needsRedraw = true;
+            break;
+        case VIEWS.VISUALIZER:
+            closeHierarchyVisualizer("back");
+            announce("Hierarchy Editor");
+            needsRedraw = true;
+            break;
         case VIEWS.HIERARCHY_EDITOR: {
             /* Helper: announce current hierarchy level label after navigation */
             const announceHierLevel = () => {
@@ -9150,8 +10995,22 @@ function handleBack() {
             };
             if (hierEditorEditMode) {
                 /* Exit param edit mode first */
+                const selectedParam = hierEditorParams[hierEditorSelectedIdx];
+                const selectedKey = (selectedParam && typeof selectedParam === "object")
+                    ? (selectedParam.key || selectedParam)
+                    : selectedParam;
+                const meta = selectedKey ? getParamMetadata(selectedKey) : null;
+                const fullKey = selectedKey ? buildHierarchyParamKey(selectedKey) : "";
+                const shouldRevert = !!(meta && (meta.onCancel || parseMetaBool(meta.cancel_reverts)));
+                if (selectedKey && fullKey && hierEditorEditOriginalValue !== null && shouldRevert) {
+                    setSlotParam(hierEditorSlot, fullKey, String(hierEditorEditOriginalValue));
+                    callParamCallback(meta, "onCancel", selectedKey, hierEditorEditOriginalValue, hierEditorEditValue);
+                } else if (meta && meta.onCancel) {
+                    callParamCallback(meta, "onCancel", selectedKey, hierEditorEditValue, hierEditorEditOriginalValue);
+                }
                 hierEditorEditMode = false;
                 resetHierarchyEditState();
+                refreshHierarchyParamListIfNeeded(false, selectedKey);
                 needsRedraw = true;
                 announceHierLevel();
             } else if (hierEditorPresetEditMode) {
@@ -11111,11 +12970,23 @@ globalThis.tick = function() {
         needsRedraw = true;
     }
 
+    /* Auto-launch module visualizer after hierarchy inactivity timeout. */
+    tickHierarchyVisualizerIdle();
+
     /* Throttled knob overlay refresh - once per frame instead of per CC */
     refreshPendingKnobOverlay();
 
     /* Throttled hierarchy knob adjustment - once per frame */
     processPendingHierKnob();
+
+    if (view === VIEWS.CANVAS) {
+        tickCanvasPreview();
+        needsRedraw = true;
+    }
+    if (view === VIEWS.VISUALIZER) {
+        tickHierarchyVisualizer();
+        needsRedraw = true;
+    }
 
     /* Refresh knob mappings if track-selected slot changed */
     if (lastKnobSlot !== currentTargetSlot) {
@@ -11236,6 +13107,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.HIERARCHY_EDITOR:
             drawHierarchyEditor();
+            break;
+        case VIEWS.CANVAS:
+            drawCanvasPreview();
+            break;
+        case VIEWS.VISUALIZER:
+            drawHierarchyVisualizer();
             break;
         case VIEWS.FILEPATH_BROWSER:
             drawFilepathBrowser();
@@ -11421,18 +13298,20 @@ globalThis.tick = function() {
             drawSlots();
     }
 
-    /* Draw text entry on top if active */
-    if (isTextEntryActive()) {
-        drawTextEntry();
-    }
+    if (view !== VIEWS.CANVAS && view !== VIEWS.VISUALIZER) {
+        /* Draw text entry on top if active */
+        if (isTextEntryActive()) {
+            drawTextEntry();
+        }
 
-    /* Draw warning overlay if active */
-    if (warningActive) {
-        drawMessageOverlay(warningTitle, warningLines);
-    }
+        /* Draw warning overlay if active */
+        if (warningActive) {
+            drawMessageOverlay(warningTitle, warningLines);
+        }
 
-    /* Draw overlay on top of main view (uses shared overlay system) */
-    drawOverlay();
+        /* Draw overlay on top of main view (uses shared overlay system) */
+        drawOverlay();
+    }
 };
 
 let debugMidiCounter = 0;
@@ -11447,6 +13326,35 @@ globalThis.onMidiMessageInternal = function(data) {
         debugLog(`MIDI_IN: view=${view} status=${status} d1=${d1} d2=${d2} loaded=${overtakeModuleLoaded} callbacks=${!!overtakeModuleCallbacks}`);
     }
 
+    // Canvas emergency exit path: always allow Main Click/Back to close canvas.
+    if (view === VIEWS.CANVAS && (status & 0xF0) === 0xB0) {
+        if (d1 === MoveMainButton && d2 > 0) {
+            closeCanvasPreview(false);
+            announce("Hierarchy Editor");
+            needsRedraw = true;
+            return;
+        }
+        if (d1 === MoveBack && d2 > 0) {
+            closeCanvasPreview(true);
+            announce("Hierarchy Editor");
+            needsRedraw = true;
+            return;
+        }
+    }
+
+    /* In hierarchy mode, control input resets visualizer inactivity timer.
+     * If visualizer is active, control input closes it immediately. */
+    if (isHierarchyVisualizerControlInput(status, d1, d2) &&
+        (view === VIEWS.HIERARCHY_EDITOR || view === VIEWS.VISUALIZER)) {
+        hierarchyVisualizerLastControlMs = Date.now();
+        if (view === VIEWS.VISUALIZER) {
+            closeHierarchyVisualizer("control_input");
+            announce("Hierarchy Editor");
+            needsRedraw = true;
+            return;
+        }
+    }
+
 
 
     /* Handle text entry MIDI if active */
@@ -11455,6 +13363,16 @@ globalThis.onMidiMessageInternal = function(data) {
             needsRedraw = true;
             return;  /* Consumed by text entry */
         }
+    }
+
+    if (dispatchHierarchyVisualizerMidi(data, "internal")) {
+        needsRedraw = true;
+        return;
+    }
+
+    if (dispatchCanvasMidi(data, "internal")) {
+        needsRedraw = true;
+        return;
     }
 
     /* Dismiss warning overlay on button presses, but not knob turns. */
@@ -11645,6 +13563,12 @@ globalThis.onMidiMessageInternal = function(data) {
     }
 };
 
-globalThis.onMidiMessageExternal = function(_data) {
-    /* ignore */
+globalThis.onMidiMessageExternal = function(data) {
+    if (dispatchHierarchyVisualizerMidi(data, "external")) {
+        needsRedraw = true;
+        return;
+    }
+    if (dispatchCanvasMidi(data, "external")) {
+        needsRedraw = true;
+    }
 };

@@ -1,0 +1,433 @@
+{
+  "title": "Minimal Synth UI Parameter System",
+  "version": "1.0",
+  "description": "Compact JSON schema-style spec for a tiny synth UI with reusable parameter definitions, shared properties, callbacks, modulation, knob assignment, overlays, and custom canvas views.",
+  "parameter_types": [
+    {
+      "type": "float",
+      "label": "Float",
+      "description": "Continuous value such as cutoff or gain.",
+      "options": {
+        "min": 0.0,
+        "max": 1.0,
+        "increment_jog": 0.01,
+        "increment_knob": 0.05,
+        "step": null,
+        "scale": "linear"
+      }
+    },
+    {
+      "type": "int",
+      "label": "Int",
+      "description": "Discrete numeric value.",
+      "options": {
+        "min": 0,
+        "max": 127,
+        "increment_jog": 1,
+        "increment_knob": 4
+      }
+    },
+    {
+      "type": "percentage",
+      "label": "Percentage",
+      "description": "Normalized 0 to 100 percent value.",
+      "options": {
+        "increment_jog": 1,
+        "increment_knob": 5
+      }
+    },
+    {
+      "type": "enum",
+      "label": "Enum / Select",
+      "description": "Choose from a list of values such as waveform type.",
+      "options": {
+        "values": [],
+        "display_labels": [],
+        "wrap": true,
+        "display_mode": "cycle"
+      }
+    },
+    {
+      "type": "boolean",
+      "label": "Boolean",
+      "description": "On/off or momentary toggle.",
+      "options": {
+        "mode": "toggle"
+      }
+    },
+    {
+      "type": "note",
+      "label": "Note",
+      "description": "Musical note value such as C3 or D#4.",
+      "options": {
+        "min_note": "C0",
+        "max_note": "C8",
+        "display_format": "name_octave"
+      }
+    },
+    {
+      "type": "time",
+      "label": "Time / Division",
+      "description": "Free time in ms/sec or synced musical divisions.",
+      "options": {
+        "mode": "free",
+        "unit": "ms",
+        "divisions": [
+          "1/1",
+          "1/2",
+          "1/4",
+          "1/8",
+          "1/8T",
+          "1/16"
+        ]
+      }
+    },
+    {
+      "type": "bipolar",
+      "label": "Bipolar",
+      "description": "Centered range such as pan or modulation depth.",
+      "options": {
+        "min": -1.0,
+        "max": 1.0,
+        "center": 0.0,
+        "snap_to_center": true
+      }
+    },
+    {
+      "type": "string",
+      "label": "String",
+      "description": "Text input.",
+      "options": {
+        "placeholder": "",
+        "validation_regex": null
+      }
+    },
+    {
+      "type": "filepath",
+      "label": "Filepath",
+      "description": "Select a file from a browser.",
+      "options": {
+        "root_path": "",
+        "start_path": "",
+        "file_filter": "*.*"
+      }
+    },
+    {
+      "type": "waveform_position",
+      "label": "Waveform Position",
+      "description": "Scrub position within a waveform with a visual marker.",
+      "options": {
+        "time_display": "ms"
+      }
+    },
+    {
+      "type": "range",
+      "label": "Range",
+      "description": "Two values defining a min/max pair.",
+      "options": {
+        "min": 0.0,
+        "max": 1.0,
+        "linked_editing": false
+      }
+    },
+    {
+      "type": "vector",
+      "label": "Vector",
+      "description": "Grouped values such as XY pad or ADSR-like compact tuples.",
+      "options": {
+        "dimensions": 2,
+        "display_mode": "inline"
+      }
+    },
+    {
+      "type": "macro",
+      "label": "Macro",
+      "description": "Single control that affects multiple parameters.",
+      "options": {
+        "targets": [],
+        "mapping_curves": []
+      }
+    },
+    {
+      "type": "mod_target",
+      "label": "Mod Target",
+      "description": "Select which parameter to modulate.",
+      "options": {
+        "available_targets": []
+      }
+    },
+    {
+      "type": "folder",
+      "label": "Folder / Group",
+      "description": "Container for parameters.",
+      "options": {
+        "collapsible": true
+      }
+    },
+    {
+      "type": "button",
+      "label": "Button",
+      "description": "Triggers an action.",
+      "options": {
+        "button_style": "default"
+      }
+    },
+    {
+      "type": "canvas",
+      "label": "Canvas",
+      "description": "Dedicated custom UI view.",
+      "options": {
+        "render_handler": null,
+        "input_handler": null
+      }
+    }
+  ],
+  "shared_properties": {
+    "identity": {
+      "id": "unique.parameter.id",
+      "path": "/module/section/parameter"
+    },
+    "display": {
+      "name": "internal_name",
+      "label": "User Label",
+      "default_value": null,
+      "visibility": "show",
+      "conditional_display": null,
+      "tooltip": null
+    },
+    "interaction": {
+      "increment_jog": null,
+      "increment_knob": null,
+      "fine_increment": null,
+      "acceleration": false
+    },
+    "behavior": {
+      "min": null,
+      "max": null,
+      "step": null,
+      "snap": false,
+      "snap_points": [],
+      "wrap": false,
+      "scale": "linear",
+      "smoothing_ms": 0
+    },
+    "modulation": {
+      "modulatable": true,
+      "mod_sources": []
+    },
+    "state": {
+      "value": null,
+      "base_value": null
+    },
+    "callbacks": {
+      "onEnter": null,
+      "onModify": null,
+      "onExit": null,
+      "onCancel": null
+    },
+    "external_control": {
+      "dynamic_value": true,
+      "dynamic_options": true,
+      "settable_externally": true,
+      "gettable_externally": true
+    },
+    "preset": {
+      "store_in_preset": true
+    },
+    "randomization": {
+      "randomizable": false,
+      "random_min": null,
+      "random_max": null
+    }
+  },
+  "ui_control_mapping": {
+    "favorite": {
+      "type": "boolean",
+      "description": "Marks a parameter for quick access."
+    },
+    "knob_assignment": {
+      "type": "enum",
+      "values": [
+        "none",
+        "local-knob",
+        "global-knob"
+      ],
+      "description": "Maps the parameter to a local or global performance knob."
+    },
+    "priority": {
+      "type": "int",
+      "description": "Higher priority parameters appear earlier on tiny screens."
+    },
+    "group": {
+      "type": "string",
+      "description": "Logical grouping for navigation and display."
+    }
+  },
+  "interaction_model": {
+    "focus_system": "Only one parameter is actively edited at a time.",
+    "modes": [
+      "browse",
+      "edit",
+      "fine_edit"
+    ],
+    "reset_to_default": {
+      "enabled": true,
+      "triggers": [
+        "long_press",
+        "double_click"
+      ]
+    }
+  },
+  "extended_ui": {
+    "overlay": {
+      "description": "Temporary lightweight custom UI layered on top of the current screen.",
+      "properties": {
+        "enabled": true,
+        "overlay_type": "custom",
+        "render_handler": null,
+        "input_handler": null
+      }
+    },
+    "canvas": {
+      "description": "Full-screen custom interface for specialized editing or visualization."
+    }
+  },
+  "logic": {
+    "conditional_visibility_example": "mode == 'lfo' and depth > 0",
+    "parameter_linking": {
+      "enabled": true,
+      "source_param": null,
+      "mapping": "linear"
+    }
+  },
+  "system_features": {
+    "undo_last_change": true
+  },
+  "example_parameters": [
+    {
+      "type": "float",
+      "id": "filter.cutoff",
+      "path": "/synth/filter/cutoff",
+      "name": "cutoff",
+      "label": "Cutoff",
+      "default_value": 1200.0,
+      "value": 1200.0,
+      "base_value": 1200.0,
+      "min": 20.0,
+      "max": 20000.0,
+      "increment_jog": 10.0,
+      "increment_knob": 100.0,
+      "fine_increment": 1.0,
+      "scale": "log",
+      "smoothing_ms": 15,
+      "visibility": "show",
+      "conditional_display": null,
+      "favorite": true,
+      "knob_assignment": "local-knob",
+      "priority": 100,
+      "group": "Filter",
+      "modulatable": true,
+      "mod_sources": [
+        {
+          "source": "lfo1",
+          "amount": 0.25
+        }
+      ],
+      "callbacks": {
+        "onEnter": "show_filter_overlay",
+        "onModify": "update_filter",
+        "onExit": null,
+        "onCancel": "revert_value"
+      }
+    },
+    {
+      "type": "enum",
+      "id": "osc1.waveform",
+      "path": "/synth/osc1/waveform",
+      "name": "waveform",
+      "label": "Wave",
+      "default_value": "saw",
+      "value": "saw",
+      "visibility": "show",
+      "conditional_display": null,
+      "options": {
+        "values": [
+          "sine",
+          "triangle",
+          "saw",
+          "square"
+        ],
+        "display_labels": [
+          "Sine",
+          "Tri",
+          "Saw",
+          "Sq"
+        ],
+        "wrap": true,
+        "display_mode": "cycle"
+      },
+      "favorite": true,
+      "knob_assignment": "global-knob",
+      "priority": 90,
+      "group": "Oscillator"
+    },
+    {
+      "type": "time",
+      "id": "lfo1.rate",
+      "path": "/synth/lfo1/rate",
+      "name": "rate",
+      "label": "LFO Rate",
+      "default_value": "1/8",
+      "value": "1/8",
+      "visibility": "show",
+      "conditional_display": "lfo1.sync == true",
+      "options": {
+        "mode": "sync",
+        "unit": "division",
+        "divisions": [
+          "1/1",
+          "1/2",
+          "1/4",
+          "1/8",
+          "1/8T",
+          "1/16",
+          "1/32"
+        ]
+      },
+      "favorite": false,
+      "knob_assignment": "none",
+      "priority": 70,
+      "group": "LFO"
+    },
+    {
+      "type": "button",
+      "id": "sample.load",
+      "path": "/sampler/sample/load",
+      "name": "load_sample",
+      "label": "Load Sample",
+      "default_value": null,
+      "visibility": "show",
+      "callbacks": {
+        "onEnter": "open_file_browser",
+        "onModify": null,
+        "onExit": null,
+        "onCancel": null
+      },
+      "group": "Sample"
+    },
+    {
+      "type": "canvas",
+      "id": "env1.editor",
+      "path": "/synth/env1/editor",
+      "name": "env_editor",
+      "label": "Envelope",
+      "default_value": null,
+      "visibility": "show",
+      "group": "Envelope",
+      "options": {
+        "render_handler": "draw_envelope_editor",
+        "input_handler": "handle_envelope_input"
+      }
+    }
+  ]
+}

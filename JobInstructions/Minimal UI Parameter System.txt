@@ -1,0 +1,233 @@
+# 🎛️ Minimal Synth UI Parameter System 
+
+## 🧩 1. Core Parameter Types
+
+### 1. Float
+
+Continuous value (e.g. cutoff, gain)
+**Options:** min, max, increment (jog/knob), step (optional), scale (linear/log)
+
+### 2. Int
+
+Discrete numeric value
+**Options:** min, max, increment
+
+### 3. Percentage
+
+Normalized 0–100% value
+**Options:** increment (jog/knob), display as %
+
+### 4. Enum / Select
+
+Choose from a list of values (e.g. waveform type)
+**Options:** list of values, wrap (cycle), display mode (list/cycle)
+
+### 5. Boolean
+
+On/off or momentary toggle
+**Options:** toggle or momentary
+
+### 6. Note
+
+Musical note value (e.g. C3, D#4)
+**Options:** range, display format
+
+### 7. Time / Division
+
+Time in ms/sec or BPM-synced divisions
+**Options:** free/sync mode, list of divisions
+
+### 8. Bipolar
+
+Centered range (e.g. -1 to 1 for modulation/pan)
+**Options:** center point (usually 0), optional snap
+
+### 9. String
+
+Text input
+**Options:** none (or validation)
+
+### 10. Filepath
+
+Select a file
+**Options:** root path, start path, file filter
+
+### 11. Waveform Position
+
+Scrub position within a waveform
+**Options:** display in ms or seconds
+
+### 12. Range (Min/Max Pair)
+
+Two values defining a range
+**Options:** min/max bounds, linked editing
+
+### 13. Vector (Vec2 / Vec3)
+
+Grouped values (e.g. XY pad, ADSR)
+**Options:** dimension count, display mode
+
+### 14. Macro
+
+Single control affecting multiple parameters
+**Options:** target params, mapping curves
+
+### 15. Mod Target
+
+Select which parameter to modulate
+**Options:** list of available parameters
+
+### 16. Folder / Group
+
+Container for parameters
+**Options:** collapsible
+
+### 17. Button
+
+Triggers an action
+**Options:** callback function
+
+### 18. Canvas
+
+Full custom UI view
+**Options:** custom render + interaction handler
+
+---
+
+# ⚙️ 2. Shared Parameter Properties (All Params)
+
+### Identity
+
+* **id / path** — unique identifier for routing, presets, modulation
+
+### Display
+
+* **name / label** — internal + user-facing name
+* **default value** — initial state
+* **visibility** — show / hide / disable
+* **conditional display** — show based on expression
+
+### Interaction
+
+* **increment (jog / knob)** — base step size
+* **fine increment** — smaller step (e.g. with modifier)
+* **acceleration** — faster turning = larger steps
+
+### Behavior
+
+* **min / max** — bounds
+* **step / snap** — quantization or fixed steps
+* **wrap** — value loops around (useful for enums/phase)
+* **snap points** — important values (e.g. center = 0)
+* **scale** — linear / logarithmic / exponential
+
+### Audio Safety
+
+* **smoothing** — prevents zipper noise on changes
+
+### Modulation
+
+* **modulatable** — can be controlled externally
+* **mod sources** — LFO, envelope, etc. applied to param
+
+### State
+
+* **value** — current value
+* **base value** — stored value (pre-modulation)
+
+### Callbacks
+
+* **onEnter** — when user starts editing
+* **onModify** — while changing
+* **onExit** — when finished
+* **onCancel** — revert changes
+
+### External Control
+
+* **dynamic options** — values/options can be modified externally
+* **set/get API** — accessible from system (MIDI, scripts, etc.)
+
+---
+
+# 🎛️ 3. UI / Control Mapping
+
+### Favorite / Knob Assignment
+
+* **favorite (true/false)** — marks parameter for quick access
+* **knob assignment** — map to local or global knob
+
+  * *Local knob:* context-dependent (per page/module)
+  * *Global knob:* always accessible
+
+👉 This doubles as your “performance layer”
+
+### Navigation Priority
+
+* **priority** — determines which params appear first on small screens
+
+### Grouping
+
+* **group / folder** — logical organization of parameters
+
+---
+
+# 🧭 4. Interaction Model
+
+### Focus System
+
+Only one parameter actively edited at a time
+
+### Modes
+
+* **browse** — navigate parameters
+* **edit** — adjust value
+* **fine edit** — precise adjustment
+
+### Reset / Default
+
+Quick reset (e.g. long press or double click)
+
+---
+
+# 🧩 5. Overlays & Extended UI
+
+### Overlay (Lightweight Custom UI)
+
+Temporary visual layer without leaving main UI
+**Examples:** waveform preview, LFO shape, envelope graph
+
+### Canvas (Full UI)
+
+Dedicated custom interface when needed
+
+---
+
+# 🧠 6. Logic & Conditions
+
+### Conditional Visibility
+
+```text
+show if: mode == "lfo" AND depth > 0
+```
+
+Controls dynamic UI behavior
+
+### Parameter Linking
+
+One parameter drives another (optionally scaled)
+---
+
+# 🎲 7. System Features (Optional but Powerful)
+
+### Randomization
+
+Parameter can be randomized within bounds
+
+### Preset Control
+
+Include/exclude parameter from preset saving
+
+### Undo (Minimal)
+
+Revert last change
+

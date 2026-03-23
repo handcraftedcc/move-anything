@@ -82,6 +82,8 @@ Modules (src/modules/<id>/):
 src/modules/<id>/
   module.json       # Required - metadata and capabilities
   ui.js             # JavaScript UI
+  canvas.js         # Optional canvas overlay script for chain_params type "canvas"
+  visualizer.js     # Optional inactivity visualizer overlay script
   dsp.so            # Optional native DSP plugin
 ```
 
@@ -92,6 +94,7 @@ Built-in modules (in main repo):
 - `file-browser` - File/folder browser (tool)
 - `song-mode` - Song arranger for sequencing clips (tool)
 - `wav-player` - WAV file playback (tool, used by file browser)
+- `param-lab` - Parameter metadata validation module (midi_fx)
 
 ### JS Module Lifecycle
 

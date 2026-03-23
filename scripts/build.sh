@@ -132,6 +132,7 @@ mkdir -p ./build/modules/audio_fx/freeverb/
 mkdir -p ./build/modules/midi_fx/chord/
 mkdir -p ./build/modules/midi_fx/arp/
 mkdir -p ./build/modules/midi_fx/velocity_scale/
+mkdir -p ./build/modules/midi_fx/param-lab/
 mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/tools/wav-player/
 
@@ -456,6 +457,18 @@ if needs_rebuild build/modules/midi_fx/velocity_scale/dsp.so \
         -Isrc
 else
     echo "Skipping velocity scale MIDI FX (up to date)"
+fi
+
+# Build Param Lab MIDI FX
+if needs_rebuild build/modules/midi_fx/param-lab/dsp.so \
+    src/modules/midi_fx/param-lab/dsp/param_lab.c src/host/midi_fx_api_v1.h; then
+    echo "Building param-lab MIDI FX..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/midi_fx/param-lab/dsp/param_lab.c \
+        -o build/modules/midi_fx/param-lab/dsp.so \
+        -Isrc
+else
+    echo "Skipping param-lab MIDI FX (up to date)"
 fi
 
 echo "Building Sound Generator plugins..."
