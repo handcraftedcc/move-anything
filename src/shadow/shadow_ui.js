@@ -8240,9 +8240,7 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
     const label = selectedMeta && (selectedMeta.label || selectedMeta.name)
         ? String(selectedMeta.label || selectedMeta.name)
         : selectedKey;
-    const modeLabel = preview.mode === "start" ? "Start"
-        : (preview.mode === "end" ? "End" : "Position");
-    const valueText = `${modeLabel}: ${getWavPositionDisplayText(preview.value, selectedMeta, preview.durationSec)}${shiftHeld ? " [fine]" : ""}`;
+    const valueText = `${getWavPositionDisplayText(preview.value, selectedMeta, preview.durationSec)}${shiftHeld ? " [fine]" : ""}`;
     const sourceText = wavPositionGetBaseName(preview.path || "") || "(no file)";
 
     print(Math.max(0, Math.floor((SCREEN_WIDTH - label.length * 5) / 2)), 2, truncateText(label, 24), 1);
