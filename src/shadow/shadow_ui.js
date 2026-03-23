@@ -1523,12 +1523,12 @@ function buildNoteParamMeta(meta) {
 function buildRateParamMeta(meta) {
     const includeBars = parseMetaBool(getMetaOption(meta, "include_bars", true));
     const includeTriplets = parseMetaBool(getMetaOption(meta, "include_triplets", true));
-    const rawBarsMode = String(getMetaOption(meta, "bars_mode", "bars-simple")).toLowerCase();
+    const rawBarsMode = String(getMetaOption(meta, "bars_mode", "bars-every")).toLowerCase();
     let barsMode = rawBarsMode;
     if (barsMode === "pow2") barsMode = "bars-simple";   /* legacy alias */
     if (barsMode === "all") barsMode = "bars-every";     /* legacy alias */
     if (barsMode !== "bars-simple" && barsMode !== "bars-every") {
-        barsMode = "bars-simple";
+        barsMode = "bars-every";
     }
 
     const options = [];

@@ -627,8 +627,8 @@ Each entry in `params` is either:
 | `canvas` | `display_value_type`, `trigger_value` | Trigger-style parameter with configurable idle value formatting |
 
 `rate.bars_mode` values:
-- `bars-simple` (default): `16, 8, 4, 2, 1`
-- `bars-every`: every bar count from `16` down to `1`
+- `bars-every` (default): every bar count from `16` down to `1`
+- `bars-simple`: `16, 8, 4, 2, 1`
 - Legacy aliases are still accepted: `pow2` -> `bars-simple`, `all` -> `bars-every`
 
 Rate options are emitted from slowest to fastest timing, for example:
@@ -829,7 +829,7 @@ These map to knobs 1-8 in the Shadow UI for quick access.
   "capabilities": {
     "chain_params": [
       { "key": "root_note", "name": "Root", "type": "note", "mode": "multi", "min_note": 24, "max_note": 96 },
-      { "key": "lfo_rate", "name": "Rate", "type": "rate", "include_bars": true, "bars_mode": "bars-simple", "include_triplets": true },
+      { "key": "lfo_rate", "name": "Rate", "type": "rate", "include_bars": true, "bars_mode": "bars-every", "include_triplets": true },
       { "key": "sample_file", "name": "Sample", "type": "filepath", "root": "/data/UserData/UserLibrary/Samples", "filter": [".wav", ".aif"] },
       { "key": "start_ms", "name": "Start", "type": "wav_position", "display_unit": "ms", "mode": "trim_front", "filepath_param": "sample_file", "min": 0, "max": 5000, "step": 1 },
       { "key": "label", "name": "Label", "type": "string", "default": "Init" },
