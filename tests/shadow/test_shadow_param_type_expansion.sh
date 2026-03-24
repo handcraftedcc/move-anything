@@ -89,13 +89,18 @@ if ! rg -F -q "if (meta && meta.ui_type === \"wav_position\" && isShiftHeld()) {
   exit 1
 fi
 
-if ! rg -F -q "const fineStep = Math.abs(baseStep) * 0.1;" "$shadow_file"; then
-  echo "FAIL: wav_position knob fine-step should derive from base step" >&2
+if ! rg -F -q "function getWavPositionShiftMultiplier(meta) {" "$shadow_file"; then
+  echo "FAIL: wav_position shift multiplier helper is missing" >&2
   exit 1
 fi
 
-if ! rg -F -q "? (fineStep > 0 ? fineStep : baseStep)" "$shadow_file"; then
-  echo "FAIL: wav_position knob shift step should use base step * 0.1" >&2
+if ! rg -F -q "shift_increment_multiplier" "$shadow_file"; then
+  echo "FAIL: wav_position shift increment multiplier metadata is missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q "Math.abs(baseStep) * getWavPositionShiftMultiplier(ctx.meta)" "$shadow_file"; then
+  echo "FAIL: wav_position knob shift step should use metadata multiplier" >&2
   exit 1
 fi
 
@@ -164,7 +169,7 @@ if ! rg -F -q "| \`note\` | \`mode\`, \`min_note\`, \`max_note\` |" "$docs_file"
   exit 1
 fi
 
-if ! rg -F -q "| \`wav_position\` | \`display_unit\`, \`mode\`, \`filepath_param\`, \`min\`, \`max\`, \`step\` |" "$docs_file"; then
+if ! rg -F -q "| \`wav_position\` | \`display_unit\`, \`mode\`, \`filepath_param\`, \`min\`, \`max\`, \`step\`, \`shift_increment_multiplier\` |" "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position parameter type documentation" >&2
   exit 1
 fi
@@ -176,6 +181,11 @@ fi
 
 if ! rg -F -q "\`mode\`: \`position\`, \`start\`, \`end\`" "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position mode guidance" >&2
+  exit 1
+fi
+
+if ! rg -F -q "\`shift_increment_multiplier\` (alias: \`shift_step_multiplier\`, default \`0.1\`)" "$docs_file"; then
+  echo "FAIL: docs/MODULES.md is missing wav_position shift multiplier guidance" >&2
   exit 1
 fi
 

@@ -1589,6 +1589,17 @@ function buildWavPositionParamMeta(meta) {
     const max = parseMetaNumber(getMetaOption(meta, "max", defaultMax), defaultMax);
     const defaultStep = displayUnit === "ms" ? 1 : ((displayUnit === "sec" || displayUnit === "s") ? 0.01 : 1);
     const step = parseMetaNumber(getMetaOption(meta, "step", defaultStep), defaultStep);
+    const shiftMultiplierRaw = parseMetaNumber(
+        getMetaOption(
+            meta,
+            "shift_increment_multiplier",
+            getMetaOption(meta, "shift_step_multiplier", 0.1)
+        ),
+        0.1
+    );
+    const shiftMultiplier = (Number.isFinite(shiftMultiplierRaw) && shiftMultiplierRaw > 0)
+        ? shiftMultiplierRaw
+        : 0.1;
     const filepathParam = String(getMetaOption(meta, "filepath_param", "") || "");
     return {
         ...meta,
@@ -1596,6 +1607,7 @@ function buildWavPositionParamMeta(meta) {
         min,
         max,
         step,
+        shift_increment_multiplier: shiftMultiplier,
         ui_type: "wav_position",
         display_unit: displayUnit,
         wav_mode: mode,
@@ -7247,7 +7259,7 @@ function adjustHierSelectedParam(delta) {
     const isInt = meta && meta.type === "int";
     let step = meta && meta.step ? meta.step : (isInt ? 1 : 0.02);
     if (meta && meta.ui_type === "wav_position" && isShiftHeld()) {
-        const fineStep = Math.abs(step) * 0.1;
+        const fineStep = Math.abs(step) * getWavPositionShiftMultiplier(meta);
         if (fineStep > 0) step = fineStep;
     }
     const min = meta && typeof meta.min === "number" ? meta.min : 0;
@@ -7738,7 +7750,7 @@ function processPendingHierKnob() {
     const accel = fineWavEdit ? 1 : calcKnobAccel(knobIndex, isInt);
 
     /* Apply accumulated delta with acceleration and clamp */
-    const fineStep = Math.abs(baseStep) * 0.1;
+    const fineStep = Math.abs(baseStep) * getWavPositionShiftMultiplier(ctx.meta);
     const step = fineWavEdit
         ? (fineStep > 0 ? fineStep : baseStep)
         : (baseStep * accel);
@@ -7902,6 +7914,11 @@ function getWavPositionDisplayText(rawValue, meta, durationSec) {
 
     const ratio = normalizeWavPositionRatio(num, meta, durationSec);
     return `${(ratio * 100).toFixed(2)}%`;
+}
+
+function getWavPositionShiftMultiplier(meta) {
+    const raw = parseMetaNumber(meta && meta.shift_increment_multiplier, 0.1);
+    return (Number.isFinite(raw) && raw > 0) ? raw : 0.1;
 }
 
 function isEmptyParamValue(rawValue) {

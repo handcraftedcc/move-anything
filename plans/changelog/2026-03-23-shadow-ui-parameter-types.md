@@ -87,6 +87,12 @@ Branch: parameter-additions
 - `bash tests/shadow/test_shadow_hierarchy_child_prefix.sh` PASS
 - `bash tests/shadow/test_shadow_trigger_enum_reset.sh` PASS
 
+### Update: 2026-03-24 (WAV Shift Multiplier)
+
+- Added optional `wav_position.shift_increment_multiplier` metadata (default `0.1`) to control Shift fine-step scaling.
+- Added alias: `shift_step_multiplier`.
+- Applied in both jog edit mode and knob edit mode for consistent fine-step behavior.
+
 ### Install Status
 
 - Built and installed from `parameter-additions` using:

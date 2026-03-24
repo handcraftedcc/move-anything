@@ -622,7 +622,7 @@ Each entry in `params` is either:
 | `mode` | `options` | Mode selector (like enum, triggers mode switch) |
 | `note` | `mode`, `min_note`, `max_note` | Generated note selector (`single` uses note names only, `multi` includes octaves) |
 | `rate` | `include_bars`, `bars_mode`, `include_triplets` | Generated musical rate list (divisions, triplets, bars) |
-| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step` | Numeric position/trim param with waveform preview and marker |
+| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step`, `shift_increment_multiplier` | Numeric position/trim param with waveform preview and marker |
 | `string` | none (or `default`/`value`) | Opens on-screen text entry keyboard on edit |
 | `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer` | Opens fullscreen module-defined canvas UI when clicked |
 
@@ -639,6 +639,7 @@ Rate options are emitted from slowest to fastest timing, for example:
 - `filepath_param` points to the source filepath parameter used to load waveform data.
 - `display_unit`: `percent`, `ms`, `sec` (alias: `s`).
 - `mode`: `position`, `start`, `end` (legacy aliases: `trim_front` -> `start`, `trim_end` -> `end`).
+- `shift_increment_multiplier` (alias: `shift_step_multiplier`, default `0.1`) scales the main `step` while Shift is held.
 
 `canvas` behavior:
 - Clicking a canvas parameter opens a fullscreen canvas view; click or Back exits to the hierarchy editor.
@@ -771,7 +772,7 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `parameter_picker` | `target_key`, `numeric_only`, `allow_none` | Dynamic enum from selected target's exposed params |
 | `note` | `mode`, `min_note`, `max_note` | Auto-generated note enum (centralized note naming in Shadow UI) |
 | `rate` | `include_bars`, `bars_mode`, `include_triplets` | Auto-generated musical time-division enum |
-| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step` | Position/trim control with waveform preview |
+| `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step`, `shift_increment_multiplier` | Position/trim control with waveform preview |
 | `string` | `default`/`value` | Text value edited through on-screen keyboard |
 | `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer`, `default`/`value` | Fullscreen custom canvas workflow parameter |
 
@@ -844,7 +845,7 @@ These map to knobs 1-8 in the Shadow UI for quick access.
       { "key": "root_note", "name": "Root", "type": "note", "mode": "multi", "min_note": 24, "max_note": 96 },
       { "key": "lfo_rate", "name": "Rate", "type": "rate", "include_bars": true, "bars_mode": "bars-every", "include_triplets": true },
       { "key": "sample_file", "name": "Sample", "type": "filepath", "root": "/data/UserData/UserLibrary/Samples", "filter": [".wav", ".aif"] },
-      { "key": "start_ms", "name": "Start", "type": "wav_position", "display_unit": "ms", "mode": "start", "filepath_param": "sample_file", "min": 0, "max": 5000, "step": 1 },
+      { "key": "start_ms", "name": "Start", "type": "wav_position", "display_unit": "ms", "mode": "start", "filepath_param": "sample_file", "min": 0, "max": 5000, "step": 1, "shift_increment_multiplier": 0.05 },
       { "key": "label", "name": "Label", "type": "string", "default": "Init" },
       { "key": "draw", "name": "Draw", "type": "canvas", "display_value_type": "percent", "canvas_script": "canvas.js#draw_overlay", "canvas_overlay": "draw_overlay", "show_footer": false }
     ]
