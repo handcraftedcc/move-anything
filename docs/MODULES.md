@@ -624,7 +624,7 @@ Each entry in `params` is either:
 | `rate` | `include_bars`, `bars_mode`, `include_triplets` | Generated musical rate list (divisions, triplets, bars) |
 | `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step`, `shift_increment_multiplier` | Numeric position/trim param with waveform preview and marker |
 | `string` | none (or `default`/`value`) | Opens on-screen text entry keyboard on edit |
-| `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer` | Opens fullscreen module-defined canvas UI when clicked |
+| `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer`, `show_value` | Opens fullscreen module-defined canvas UI when clicked |
 
 `rate.bars_mode` values:
 - `bars-every` (default): every bar count from `16` down to `1`
@@ -634,20 +634,9 @@ Each entry in `params` is either:
 Rate options are emitted from slowest to fastest timing, for example:
 `16 bars, ... 2 bars, 1 bar, 1/1T, 1/2, 1/2T, 1/4, ...`
 
-`wav_position` behavior:
-- Waveform view opens only while the parameter is in edit mode (click-in).
-- `filepath_param` points to the source filepath parameter used to load waveform data.
-- `display_unit`: `percent`, `ms`, `sec` (alias: `s`).
-- `mode`: `position`, `start`, `end` (legacy aliases: `trim_front` -> `start`, `trim_end` -> `end`).
-- `shift_increment_multiplier` (alias: `shift_step_multiplier`, default `0.1`) scales the main `step` while Shift is held.
-- When a linked filepath is newly selected, empty `mode: end` params auto-initialize to the file end (`100%` for percent, WAV duration for `ms`/`sec`).
-
-`canvas` behavior:
-- Clicking a canvas parameter opens a fullscreen canvas view; click or Back exits to the hierarchy editor.
-- `canvas_script` selects the module-relative script to load (default `canvas.js`). You can use `file.js#overlay_name` to target a specific overlay.
-- `canvas_overlay` (or `canvas_target`/`overlay`) selects a named overlay object if your script exports multiple overlays.
-- `show_footer` (alias `showfooter`, default `true`) controls whether the bottom value/title footer is drawn over the canvas view.
-- Canvas scripts should publish `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with optional hooks: `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+`wav_position` and `canvas` behavior details are documented in dedicated subsections below:
+- `wav_position` in module.json
+- `canvas` in module.json
 
 `visible_if` can be attached to level entries and param entries:
 
@@ -775,7 +764,7 @@ int get_param(void *instance, const char *key, char *buf, int buf_len) {
 | `rate` | `include_bars`, `bars_mode`, `include_triplets` | Auto-generated musical time-division enum |
 | `wav_position` | `display_unit`, `mode`, `filepath_param`, `min`, `max`, `step`, `shift_increment_multiplier` | Position/trim control with waveform preview |
 | `string` | `default`/`value` | Text value edited through on-screen keyboard |
-| `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer`, `default`/`value` | Fullscreen custom canvas workflow parameter |
+| `canvas` | `display_value_type`, `canvas_script`, `canvas_overlay`, `show_footer`, `show_value`, `default`/`value` | Fullscreen custom canvas workflow parameter |
 
 #### `filepath` in module.json
 
@@ -839,7 +828,7 @@ Use `type: "wav_position"` for numeric position/trim controls with waveform visu
 
 Behavior notes:
 
-- Waveform UI is shown only while the parameter is in edit mode.
+- Waveform view opens only while the parameter is in edit mode.
 - `mode: start` and `mode: end` use side-aware waveform rendering for trim workflows.
 - On filepath selection commit, empty linked `mode: end` params are initialized to file end (`100%` in percent mode, WAV duration for `ms`/`sec`).
 
@@ -856,10 +845,12 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `canvas_script` (optional): Script path relative to module root (default `canvas.js`), supports `file.js#overlay_name`.
 - `canvas_overlay` (optional): Named overlay object selector (aliases: `canvas_target`, `overlay`).
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
+- `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
 
 Behavior notes:
 
 - Clicking the parameter enters a dedicated fullscreen canvas view.
+- Set `show_value: false` for button-style canvas entries that should not show a value.
 - The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
 
 #### Dynamic Target Pickers

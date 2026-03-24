@@ -107,6 +107,13 @@ Branch: parameter-additions
 - Expanded linked end-default sync to scan hierarchy levels (not only the active level), improving cross-level linking behavior.
 - Refined `docs/MODULES.md` with dedicated `wav_position` and `canvas` field sections for cohesive module-author guidance.
 
+### Update: 2026-03-24 (Canvas Button Display + Build Script Cleanup)
+
+- Added optional `canvas.show_value` metadata (alias `showvalue`, default `true`).
+  - When `false`, canvas params hide their value in the hierarchy list and canvas footer, enabling button-style entries.
+- Removed temporary stale-module pruning logic from `scripts/build.sh` to restore standard incremental build behavior.
+- Reduced duplicated `wav_position`/`canvas` behavior text in `docs/MODULES.md` and pointed hierarchy docs to dedicated canonical subsections.
+
 ### Install Status
 
 - Built and installed from `parameter-additions` using:

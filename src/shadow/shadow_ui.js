@@ -1623,11 +1623,15 @@ function buildCanvasParamMeta(meta) {
     const showFooter = parseMetaBool(
         getMetaOption(meta, "show_footer", getMetaOption(meta, "showfooter", true))
     );
+    const showValue = parseMetaBool(
+        getMetaOption(meta, "show_value", getMetaOption(meta, "showvalue", true))
+    );
     return {
         ...meta,
         type: "canvas",
         display_value_type: displayValueType,
         show_footer: showFooter,
+        show_value: showValue,
         expanded_type: "canvas"
     };
 }
@@ -7143,6 +7147,9 @@ function formatParamForOverlay(val, meta) {
     if (meta && meta.ui_type === "wav_position") {
         return formatWavPositionDisplayValue(val, meta);
     }
+    if (meta && meta.type === "canvas" && meta.show_value === false) {
+        return "";
+    }
     if (meta && meta.type === "canvas") {
         return formatCanvasDisplayValue(val, meta);
     }
@@ -7782,6 +7789,9 @@ function formatHierDisplayValue(key, val) {
         return formatWavPositionDisplayValue(val, meta);
     }
 
+    if (meta && meta.type === "canvas" && meta.show_value === false) {
+        return "";
+    }
     if (meta && meta.type === "canvas") {
         return formatCanvasDisplayValue(val, meta);
     }
@@ -8822,8 +8832,9 @@ function drawCanvasPreview() {
         print(3, 50, "Click/Back: return", 1);
     }
 
-    let valueText = "-";
-    if (canvasParamKey) {
+    const showCanvasValue = !canvasParamMeta || canvasParamMeta.show_value !== false;
+    let valueText = showCanvasValue ? "-" : "";
+    if (showCanvasValue && canvasParamKey) {
         const fullKey = buildHierarchyParamKey(canvasParamKey);
         const raw = getSlotParam(hierEditorSlot, fullKey);
         if (raw !== null && raw !== undefined && raw !== "") {

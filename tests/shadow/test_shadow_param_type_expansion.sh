@@ -174,8 +174,23 @@ if ! rg -F -q "getMetaOption(meta, \"show_footer\", getMetaOption(meta, \"showfo
   exit 1
 fi
 
+if ! rg -F -q "getMetaOption(meta, \"show_value\", getMetaOption(meta, \"showvalue\", true))" "$shadow_file"; then
+  echo "FAIL: canvas show_value/showvalue metadata parsing is missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q "if (meta && meta.type === \"canvas\" && meta.show_value === false) {" "$shadow_file"; then
+  echo "FAIL: canvas should support hiding parameter value in hierarchy list" >&2
+  exit 1
+fi
+
 if ! rg -F -q "canvasParamMeta.show_footer !== false" "$shadow_file"; then
   echo "FAIL: canvas footer visibility flag handling is missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q "const showCanvasValue = !canvasParamMeta || canvasParamMeta.show_value !== false;" "$shadow_file"; then
+  echo "FAIL: canvas preview footer should honor show_value flag" >&2
   exit 1
 fi
 
@@ -204,17 +219,17 @@ if ! rg -F -q "Waveform view opens only while the parameter is in edit mode" "$d
   exit 1
 fi
 
-if ! rg -F -q "\`mode\`: \`position\`, \`start\`, \`end\`" "$docs_file"; then
+if ! rg -F -q "\`mode\` (optional): \`position\`, \`start\`, \`end\`" "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position mode guidance" >&2
   exit 1
 fi
 
-if ! rg -F -q "\`shift_increment_multiplier\` (alias: \`shift_step_multiplier\`, default \`0.1\`)" "$docs_file"; then
+if ! rg -F -q "\`shift_increment_multiplier\` (optional): Multiplier for Shift fine-step (default \`0.1\`; alias \`shift_step_multiplier\`)." "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position shift multiplier guidance" >&2
   exit 1
 fi
 
-if ! rg -F -q "empty \`mode: end\` params auto-initialize to the file end" "$docs_file"; then
+if ! rg -F -q "empty linked \`mode: end\` params are initialized to file end" "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position end-mode auto-default behavior" >&2
   exit 1
 fi
@@ -239,7 +254,7 @@ if ! rg -F -q "1 bar, 1/1T, 1/2, 1/2T, 1/4" "$docs_file"; then
   exit 1
 fi
 
-if ! rg -F -q "\`canvas_script\` selects the module-relative script to load" "$docs_file"; then
+if ! rg -F -q "\`canvas_script\` (optional): Script path relative to module root (default \`canvas.js\`), supports \`file.js#overlay_name\`." "$docs_file"; then
   echo "FAIL: docs/MODULES.md should describe canvas_script behavior" >&2
   exit 1
 fi
@@ -249,8 +264,13 @@ if ! rg -F -q "globalThis.canvas_overlay" "$docs_file"; then
   exit 1
 fi
 
-if ! rg -F -q "\`show_footer\` (alias \`showfooter\`, default \`true\`)" "$docs_file"; then
+if ! rg -F -q "\`show_footer\` (optional): Show/hide footer in canvas view (default \`true\`; alias \`showfooter\`)." "$docs_file"; then
   echo "FAIL: docs/MODULES.md should describe canvas footer visibility metadata" >&2
+  exit 1
+fi
+
+if ! rg -F -q "\`show_value\` (optional): Show/hide parameter value in hierarchy and canvas footer (default \`true\`; alias \`showvalue\`)." "$docs_file"; then
+  echo "FAIL: docs/MODULES.md should describe canvas show_value metadata" >&2
   exit 1
 fi
 
