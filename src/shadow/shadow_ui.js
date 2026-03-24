@@ -8262,6 +8262,9 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
             print(Math.max(0, Math.floor((SCREEN_WIDTH - msg.length * 5) / 2)), 30, truncateText(msg, 24), 1);
         } else {
             const points = waveform.points;
+            const mode = preview.mode === "start" || preview.mode === "end"
+                ? preview.mode
+                : "position";
             for (let i = 0; i < innerW; i++) {
                 const colStartNorm = zoomStart + ((i / innerW) * zoomRange);
                 const colEndNorm = zoomStart + (((i + 1) / innerW) * zoomRange);
@@ -8269,10 +8272,18 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
                 const half = Math.floor(amp * (plotH - 4) / 2);
                 if (half <= 0) continue;
                 const x = plotX + 1 + i;
+                if (mode === "start" && x > cursorX) continue;
+                if (mode === "end" && x < cursorX) continue;
                 const top = Math.max(plotY + 1, midY - half);
                 const bottom = Math.min(plotY + plotH - 2, midY + half);
-                for (let y = top; y <= bottom; y++) {
-                    set_pixel(x, y, 1);
+                if (mode === "position") {
+                    for (let y = top; y <= bottom; y++) {
+                        set_pixel(x, y, 1);
+                    }
+                } else {
+                    /* Start/end modes render an envelope-style outline only. */
+                    set_pixel(x, top, 1);
+                    set_pixel(x, bottom, 1);
                 }
             }
         }
@@ -8280,14 +8291,6 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
 
     for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
         set_pixel(cursorX, y, 1);
-    }
-
-    if (preview.mode === "start") {
-        const width = Math.max(1, cursorX - (plotX + 1));
-        fill_rect(plotX + 1, plotY + plotH - 3, width, 2, 1);
-    } else if (preview.mode === "end") {
-        const width = Math.max(1, (plotX + plotW - 2) - cursorX + 1);
-        fill_rect(cursorX, plotY + plotH - 3, width, 2, 1);
     }
 
     drawFooter({
