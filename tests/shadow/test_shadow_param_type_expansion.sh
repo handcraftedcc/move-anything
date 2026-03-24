@@ -124,6 +124,21 @@ if ! rg -F -q "applyLinkedWavEndDefaultsForFilepath(key);" "$shadow_file"; then
   exit 1
 fi
 
+if ! rg -F -q "function getWavPositionSourcePathForLevel(meta, levelDef, childIndex) {" "$shadow_file"; then
+  echo "FAIL: wav_position filepath resolution helper for cross-level sync is missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q "Object.values(hierEditorHierarchy.levels)" "$shadow_file"; then
+  echo "FAIL: linked wav end-default sync should scan hierarchy levels" >&2
+  exit 1
+fi
+
+if rg -F -q "if (mode === \"end\" && isEmptyParamValue(value)) {" "$shadow_file"; then
+  echo "FAIL: wav end-default should not auto-apply on editor open anymore" >&2
+  exit 1
+fi
+
 if ! rg -F -q "function evaluateVisibilityCondition(condition, levelDef) {" "$shadow_file"; then
   echo "FAIL: visibility condition evaluator is missing" >&2
   exit 1

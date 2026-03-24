@@ -7169,6 +7169,14 @@ function buildHierarchyParamKey(key) {
     return `${prefix}:${key}`;
 }
 
+function buildHierarchyParamKeyForLevel(levelDef, key, childIndex) {
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    if (levelDef && levelDef.child_prefix && childIndex >= 0) {
+        return `${prefix}:${levelDef.child_prefix}${childIndex}_${key}`;
+    }
+    return `${prefix}:${key}`;
+}
+
 function resetHierarchyEditState() {
     hierEditorEditKey = "";
     hierEditorEditValue = null;
@@ -7185,20 +7193,8 @@ function beginHierarchyParamEdit(key) {
     const liveVal = getSlotParam(hierEditorSlot, fullKey);
     if (baseVal === null && liveVal === null) return false;
 
-    let initialValue = (baseVal !== null) ? baseVal : liveVal;
-    if (meta && meta.ui_type === "wav_position" &&
-        getWavPositionMode(meta) === "end" &&
-        isEmptyParamValue(initialValue)) {
-        const wavPath = getWavPositionSourcePath(meta);
-        const durationSec = (wavPath && wavPositionPathExists(wavPath))
-            ? getCachedWavDurationSec(wavPath)
-            : 0;
-        initialValue = getWavPositionEndDefaultValue(meta, durationSec);
-        setSlotParam(hierEditorSlot, fullKey, String(initialValue));
-    }
-
     hierEditorEditKey = fullKey;
-    hierEditorEditValue = String(initialValue);
+    hierEditorEditValue = String((baseVal !== null) ? baseVal : liveVal);
     return true;
 }
 
@@ -7883,6 +7879,32 @@ function getWavPositionSourcePath(meta) {
     return rawPath;
 }
 
+function getWavPositionSourcePathForLevel(meta, levelDef, childIndex) {
+    const filepathParam = String(meta && meta.filepath_param || "").trim();
+    if (!filepathParam) return "";
+
+    const linkedKey = filepathParam.includes(":")
+        ? filepathParam
+        : buildHierarchyParamKeyForLevel(levelDef, filepathParam, childIndex);
+    const rawPath = normalizeWavPathString(getSlotParam(hierEditorSlot, linkedKey) || "");
+    if (!rawPath) return "";
+    if (rawPath.startsWith("/") && wavPositionPathExists(rawPath)) return rawPath;
+    if (wavPositionPathExists(rawPath)) return rawPath;
+
+    const lookupKey = filepathParam.includes(":")
+        ? String(filepathParam.split(":").pop() || "").trim()
+        : filepathParam;
+    const sourceMeta = lookupKey ? (getParamMetadata(lookupKey) || {}) : {};
+    const candidates = [];
+    if (sourceMeta.start_path) candidates.push(joinWavPath(sourceMeta.start_path, rawPath));
+    if (sourceMeta.root) candidates.push(joinWavPath(sourceMeta.root, rawPath));
+
+    for (const candidate of candidates) {
+        if (wavPositionPathExists(candidate)) return candidate;
+    }
+    return rawPath;
+}
+
 function normalizeWavPositionRatio(rawValue, meta, durationSec) {
     const num = Number(rawValue);
     if (!Number.isFinite(num)) return 0;
@@ -8256,14 +8278,6 @@ function getWavPositionPreviewData(fullKey, meta) {
         durationSec = getCachedWavDurationSec(wavPath);
     }
 
-    if (mode === "end" && isEmptyParamValue(value)) {
-        value = getWavPositionEndDefaultValue(meta, durationSec);
-        setSlotParam(hierEditorSlot, fullKey, String(value));
-        if (hierEditorEditMode && hierEditorEditKey === fullKey) {
-            hierEditorEditValue = String(value);
-        }
-    }
-
     if (!wavPath) {
         return {
             ok: false,
@@ -8296,42 +8310,74 @@ function getWavPositionPreviewData(fullKey, meta) {
 function applyLinkedWavEndDefaultsForFilepath(filepathKey) {
     const targetKey = String(filepathKey || "").trim();
     if (!targetKey || hierEditorSlot < 0) return false;
+    const targetFullKey = buildHierarchyParamKey(targetKey);
+    const levels = hierEditorHierarchy && hierEditorHierarchy.levels && typeof hierEditorHierarchy.levels === "object"
+        ? Object.values(hierEditorHierarchy.levels)
+        : [];
+    if (levels.length === 0) return false;
 
-    const levelDef = getHierarchyLevelDef();
-    if (!levelDef || !Array.isArray(levelDef.params)) return false;
-
-    let changed = false;
-    for (const entry of levelDef.params) {
-        const wavKey = (typeof entry === "string")
-            ? entry
-            : (entry && typeof entry === "object" ? entry.key : "");
-        if (!wavKey || wavKey === targetKey) continue;
-
-        const wavMeta = getParamMetadata(wavKey);
-        if (!wavMeta || wavMeta.ui_type !== "wav_position") continue;
-        if (getWavPositionMode(wavMeta) !== "end") continue;
-
-        const linked = String(wavMeta.filepath_param || "").trim();
-        if (!linked) continue;
-        const linkedSimple = linked.includes(":")
-            ? String(linked.split(":").pop() || "").trim()
-            : linked;
-        if (linked !== targetKey && linkedSimple !== targetKey) continue;
-
-        const fullWavKey = buildHierarchyParamKey(wavKey);
-        const current = getSlotParam(hierEditorSlot, fullWavKey);
-        if (!isEmptyParamValue(current)) continue;
-
-        const wavPath = getWavPositionSourcePath(wavMeta);
-        const durationSec = (wavPath && wavPositionPathExists(wavPath))
-            ? getCachedWavDurationSec(wavPath)
-            : 0;
-        const endDefault = getWavPositionEndDefaultValue(wavMeta, durationSec);
-        setSlotParam(hierEditorSlot, fullWavKey, String(endDefault));
-        if (hierEditorEditMode && hierEditorEditKey === fullWavKey) {
-            hierEditorEditValue = String(endDefault);
+    const chainMetaByKey = new Map();
+    if (Array.isArray(hierEditorChainParams)) {
+        for (const p of hierEditorChainParams) {
+            if (p && p.key) chainMetaByKey.set(p.key, p);
         }
-        changed = true;
+    }
+
+    const selectedChildIndex = hierEditorChildIndex >= 0 ? hierEditorChildIndex : -1;
+    const seen = new Set();
+    let changed = false;
+
+    for (const levelDef of levels) {
+        if (!levelDef || !Array.isArray(levelDef.params)) continue;
+        const hasChildren = !!(levelDef.child_prefix && typeof levelDef.child_prefix === "string");
+        const childIndices = hasChildren && selectedChildIndex >= 0 ? [selectedChildIndex] : [-1];
+
+        for (const entry of levelDef.params) {
+            const wavKey = (typeof entry === "string")
+                ? entry
+                : (entry && typeof entry === "object" ? entry.key : "");
+            if (!wavKey || wavKey === targetKey) continue;
+
+            const chainMeta = chainMetaByKey.get(wavKey) || null;
+            const levelMeta = (entry && typeof entry === "object") ? entry : null;
+            const mergedMeta = chainMeta && levelMeta
+                ? { ...levelMeta, ...chainMeta }
+                : (chainMeta || levelMeta);
+            const wavMeta = normalizeExpandedParamMeta(wavKey, mergedMeta);
+            if (!wavMeta || wavMeta.ui_type !== "wav_position") continue;
+            if (getWavPositionMode(wavMeta) !== "end") continue;
+
+            const linked = String(wavMeta.filepath_param || "").trim();
+            if (!linked) continue;
+
+            for (const childIndex of childIndices) {
+                const fullWavKey = buildHierarchyParamKeyForLevel(levelDef, wavKey, childIndex);
+                if (seen.has(fullWavKey)) continue;
+                seen.add(fullWavKey);
+
+                const linkedFull = linked.includes(":")
+                    ? linked
+                    : buildHierarchyParamKeyForLevel(levelDef, linked, childIndex);
+                const linkedSimple = linked.includes(":")
+                    ? String(linked.split(":").pop() || "").trim()
+                    : linked;
+                if (linkedSimple !== targetKey && linkedFull !== targetFullKey) continue;
+
+                const current = getSlotParam(hierEditorSlot, fullWavKey);
+                if (!isEmptyParamValue(current)) continue;
+
+                const wavPath = getWavPositionSourcePathForLevel(wavMeta, levelDef, childIndex);
+                const durationSec = (wavPath && wavPositionPathExists(wavPath))
+                    ? getCachedWavDurationSec(wavPath)
+                    : 0;
+                const endDefault = getWavPositionEndDefaultValue(wavMeta, durationSec);
+                setSlotParam(hierEditorSlot, fullWavKey, String(endDefault));
+                if (hierEditorEditMode && hierEditorEditKey === fullWavKey) {
+                    hierEditorEditValue = String(endDefault);
+                }
+                changed = true;
+            }
+        }
     }
 
     return changed;
