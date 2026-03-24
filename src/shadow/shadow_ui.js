@@ -8293,6 +8293,50 @@ function getWavPositionPreviewData(fullKey, meta) {
     };
 }
 
+function applyLinkedWavEndDefaultsForFilepath(filepathKey) {
+    const targetKey = String(filepathKey || "").trim();
+    if (!targetKey || hierEditorSlot < 0) return false;
+
+    const levelDef = getHierarchyLevelDef();
+    if (!levelDef || !Array.isArray(levelDef.params)) return false;
+
+    let changed = false;
+    for (const entry of levelDef.params) {
+        const wavKey = (typeof entry === "string")
+            ? entry
+            : (entry && typeof entry === "object" ? entry.key : "");
+        if (!wavKey || wavKey === targetKey) continue;
+
+        const wavMeta = getParamMetadata(wavKey);
+        if (!wavMeta || wavMeta.ui_type !== "wav_position") continue;
+        if (getWavPositionMode(wavMeta) !== "end") continue;
+
+        const linked = String(wavMeta.filepath_param || "").trim();
+        if (!linked) continue;
+        const linkedSimple = linked.includes(":")
+            ? String(linked.split(":").pop() || "").trim()
+            : linked;
+        if (linked !== targetKey && linkedSimple !== targetKey) continue;
+
+        const fullWavKey = buildHierarchyParamKey(wavKey);
+        const current = getSlotParam(hierEditorSlot, fullWavKey);
+        if (!isEmptyParamValue(current)) continue;
+
+        const wavPath = getWavPositionSourcePath(wavMeta);
+        const durationSec = (wavPath && wavPositionPathExists(wavPath))
+            ? getCachedWavDurationSec(wavPath)
+            : 0;
+        const endDefault = getWavPositionEndDefaultValue(wavMeta, durationSec);
+        setSlotParam(hierEditorSlot, fullWavKey, String(endDefault));
+        if (hierEditorEditMode && hierEditorEditKey === fullWavKey) {
+            hierEditorEditValue = String(endDefault);
+        }
+        changed = true;
+    }
+
+    return changed;
+}
+
 function drawWavPositionEditor(selectedKey, selectedMeta) {
     clear_screen();
     hideOverlay();
@@ -10277,6 +10321,7 @@ function handleSelect() {
                     }
                     filepathBrowserState.previewSelectedPath = result.value || "";
                     setSlotParam(hierEditorSlot, fullKey, result.value || "");
+                    applyLinkedWavEndDefaultsForFilepath(key);
                     announceParameter(filepathBrowserState.title || key, result.filename || result.value || "");
                     closeHierarchyFilepathBrowser();
                 }

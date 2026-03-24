@@ -640,6 +640,7 @@ Rate options are emitted from slowest to fastest timing, for example:
 - `display_unit`: `percent`, `ms`, `sec` (alias: `s`).
 - `mode`: `position`, `start`, `end` (legacy aliases: `trim_front` -> `start`, `trim_end` -> `end`).
 - `shift_increment_multiplier` (alias: `shift_step_multiplier`, default `0.1`) scales the main `step` while Shift is held.
+- When a linked filepath is newly selected, empty `mode: end` params auto-initialize to the file end (`100%` for percent, WAV duration for `ms`/`sec`).
 
 `canvas` behavior:
 - Clicking a canvas parameter opens a fullscreen canvas view; click or Back exits to the hierarchy editor.

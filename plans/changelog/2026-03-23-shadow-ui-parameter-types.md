@@ -93,6 +93,14 @@ Branch: parameter-additions
 - Added alias: `shift_step_multiplier`.
 - Applied in both jog edit mode and knob edit mode for consistent fine-step behavior.
 
+### Update: 2026-03-24 (Linked End Defaults on File Select)
+
+- When selecting a new filepath in the hierarchy file browser, linked `wav_position` params in `mode: end` are now initialized immediately if currently empty.
+- Initialization value uses:
+  - `100%` (or metadata max range) for percent mode
+  - WAV duration for `ms` / `sec` modes
+- This keeps the value in the parameter list in sync without requiring the user to enter the wav editor first.
+
 ### Install Status
 
 - Built and installed from `parameter-additions` using:

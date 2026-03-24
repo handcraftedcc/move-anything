@@ -114,6 +114,16 @@ if ! rg -F -q "modeRaw === \"trim_end\" || modeRaw === \"end\"" "$shadow_file"; 
   exit 1
 fi
 
+if ! rg -F -q "function applyLinkedWavEndDefaultsForFilepath(filepathKey) {" "$shadow_file"; then
+  echo "FAIL: linked wav end-default sync helper is missing" >&2
+  exit 1
+fi
+
+if ! rg -F -q "applyLinkedWavEndDefaultsForFilepath(key);" "$shadow_file"; then
+  echo "FAIL: filepath selection should sync linked wav end defaults" >&2
+  exit 1
+fi
+
 if ! rg -F -q "function evaluateVisibilityCondition(condition, levelDef) {" "$shadow_file"; then
   echo "FAIL: visibility condition evaluator is missing" >&2
   exit 1
@@ -186,6 +196,11 @@ fi
 
 if ! rg -F -q "\`shift_increment_multiplier\` (alias: \`shift_step_multiplier\`, default \`0.1\`)" "$docs_file"; then
   echo "FAIL: docs/MODULES.md is missing wav_position shift multiplier guidance" >&2
+  exit 1
+fi
+
+if ! rg -F -q "empty \`mode: end\` params auto-initialize to the file end" "$docs_file"; then
+  echo "FAIL: docs/MODULES.md is missing wav_position end-mode auto-default behavior" >&2
   exit 1
 fi
 
