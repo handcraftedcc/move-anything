@@ -135,29 +135,6 @@ mkdir -p ./build/modules/midi_fx/velocity_scale/
 mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/tools/wav-player/
 
-# Remove stale module build directories that no longer exist in src/modules.
-# This prevents modules from other branches from being accidentally packaged.
-if [ -d "./build/modules" ] && [ -d "./src/modules" ]; then
-    find ./build/modules -mindepth 1 -maxdepth 1 -type d | while IFS= read -r top_dir; do
-        rel_top="${top_dir#./build/modules/}"
-        src_top="./src/modules/${rel_top}"
-        if [ ! -d "$src_top" ]; then
-            echo "Removing stale build module path: build/modules/${rel_top}"
-            rm -rf "$top_dir"
-            continue
-        fi
-
-        find "$top_dir" -mindepth 1 -maxdepth 1 -type d | while IFS= read -r child_dir; do
-            child_name="${child_dir#${top_dir}/}"
-            src_child="${src_top}/${child_name}"
-            if [ ! -d "$src_child" ]; then
-                echo "Removing stale build module path: build/modules/${rel_top}/${child_name}"
-                rm -rf "$child_dir"
-            fi
-        done
-    done
-fi
-
 # Generate bitmap font for host display (single source of truth: scripts/generate_font.py)
 if needs_rebuild build/host/font.png scripts/generate_font.py; then
     echo "Generating host bitmap font..."
