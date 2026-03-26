@@ -7134,8 +7134,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (lfo->rate_div >= LFO_NUM_DIVISIONS) lfo->rate_div = LFO_NUM_DIVISIONS - 1;
         } else if (strcmp(subkey, "sync") == 0) {
             lfo->sync = atoi(val);
-            /* Default to 1/1 (index 16) if rate_div is still at 0 (16bar) */
-            if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 16;
+            /* Default to 1/1 (index 15) if rate_div is still at 0 (16bar) */
+            if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 15;
         } else if (strcmp(subkey, "depth") == 0) {
             lfo->depth = strtof(val, NULL);
             if (lfo->depth < -1.0f) lfo->depth = -1.0f;

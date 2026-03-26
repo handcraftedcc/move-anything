@@ -11,7 +11,7 @@
  * ============================================================================ */
 
 #define LFO_COUNT 2
-#define LFO_NUM_DIVISIONS 28
+#define LFO_NUM_DIVISIONS 27
 #define LFO_SHAPE_SINE   0
 #define LFO_SHAPE_TRI    1
 #define LFO_SHAPE_SAW    2
@@ -91,7 +91,6 @@ static const lfo_division_t lfo_divisions[LFO_NUM_DIVISIONS] = {
     { "4bar",  16.0f   },
     { "3bar",  12.0f   },
     { "2bar",   8.0f   },
-    { "1bar",   4.0f   },
     { "1/1",    4.0f   },
     { "1/1T",   2.667f },
     { "1/2",    2.0f   },

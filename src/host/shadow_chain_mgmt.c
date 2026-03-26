@@ -2081,7 +2081,7 @@ void shadow_inprocess_handle_param_request(void) {
                     if (lfo->rate_div >= LFO_NUM_DIVISIONS) lfo->rate_div = LFO_NUM_DIVISIONS - 1;
                 } else if (strcmp(lfo_param, "sync") == 0) {
                     lfo->sync = atoi(shadow_param->value);
-                    if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 16;  /* Default to 1/1 */
+                    if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 15;  /* Default to 1/1 */
                 } else if (strcmp(lfo_param, "depth") == 0) {
                     lfo->depth = strtof(shadow_param->value, NULL);
                     if (lfo->depth < -1.0f) lfo->depth = -1.0f;
