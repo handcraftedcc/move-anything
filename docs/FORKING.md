@@ -19,9 +19,17 @@ The `ui_flags` field is a single `uint8_t` (8 bits) in `shadow_control_t`. All 8
 | 6 | 0x40 | JUMP_TO_SETTINGS | Jump to Global Settings |
 | 7 | 0x80 | JUMP_TO_TOOLS | Jump to Tools menu |
 
+### ui_flags2 (shadow_control_t)
+
+`ui_flags2` is a second `uint8_t` for new core UI jumps:
+
+| Bit | Mask | Flag | Purpose |
+|-----|------|------|---------|
+| 0 | 0x01 | JUMP_TO_INPUT_MODE | Jump to Input Mode menu |
+
 ### Fork extension flags
 
-Forks that need additional flags should use the `reserved16` field in `shadow_control_t`. To use it as fork-specific UI flags:
+Forks that need additional flags should avoid `ui_flags` and already allocated `ui_flags2` bits. Use an unused bit in `ui_flags2` when the feature is expected to merge upstream, or use the `reserved16` field for fork-only flags:
 
 ```c
 /* In your fork's header */
@@ -37,12 +45,12 @@ This gives forks 16 additional flag bits without modifying the upstream struct l
 
 ## Struct Layout Rules
 
-`shadow_control_t` must be exactly `CONTROL_BUFFER_SIZE` (64) bytes — enforced by the compile-time check at the bottom of `src/host/shadow_constants.h`. It is mapped into shared memory between the shim and shadow UI processes.
+`shadow_control_t` must be exactly `CONTROL_BUFFER_SIZE` bytes — enforced by the compile-time check at the bottom of `src/host/shadow_constants.h`. It is mapped into shared memory between the shim and shadow UI processes. The current size is 144 bytes.
 
 ### Rules
 
 1. **Never shrink the struct** — both shim and shadow UI map the same shared memory.
-2. **Add new fields by consuming the trailing `reserved` array.** The expansion area is currently down to `reserved[2]` (most of the original budget has been spent on `display_overlay`, `tts_debounce_ms`, `set_pages_enabled`, `skipback_*`, `shadow_ui_trigger`, etc.). At this point, new fields almost always require freeing space first — repurpose unused legacy fields, pack flags into `reserved16`, or land an upstream change to grow `CONTROL_BUFFER_SIZE`. Coordinate with upstream before bumping the size.
+2. **Prefer appending new fields.** Recent upstream work grew `CONTROL_BUFFER_SIZE` for input-mode configuration and set musical context, so there is no trailing `reserved` area to consume. Coordinate with upstream before bumping the size again.
 3. **Keep byte alignment in mind** — `uint16_t` fields need 2-byte alignment, `uint32_t` and `float` need 4-byte alignment.
 4. **Never reorder existing fields** — the shim and shadow UI may be different versions during an upgrade.
 

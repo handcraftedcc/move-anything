@@ -232,6 +232,11 @@ shadow_get_shift_held()
 shadow_get_move_ui_mode()
 shadow_get_open_tool_cmd()
 shadow_get_ui_flags() / shadow_clear_ui_flags(mask)
+shadow_get_ui_flags2() / shadow_clear_ui_flags2(mask)
+shadow_get_input_active_track()
+shadow_get_input_track_mode(track) / shadow_set_input_track_mode(track, mode)
+shadow_get_input_led_mode(track) / shadow_set_input_led_mode(track, mode)
+shadow_get_set_musical_context() // -> {valid, rootNote, scale, melodicLayout}
 shadow_get_suspend_overtake() / shadow_set_suspend_overtake(v)
 shadow_set_overtake_mode(mode)
 shadow_set_skip_led_clear(v)
@@ -297,6 +302,7 @@ console.log(msg)              // Routed to the unified logger when enabled
 
 ### Sequencer Steps
 - Notes 16-31: 16 step buttons
+- Shift + Volume Touch + Step 9 opens the Input Mode menu.
 
 ### Track Selectors
 - CCs 40-43: 4 track buttons (reversed: CC43=Track1, CC40=Track4)
@@ -342,6 +348,31 @@ Modules can claim the volume knob for their own use by setting `"claims_master_k
 ## Host Input Settings
 
 The host provides MIDI input processing that can be configured from the Settings menu:
+
+### Input Modes
+
+Input Modes are configured from the Shadow UI with Shift + Volume Touch + Step 9.
+The menu discovers installed modules with `component_type: "input_mode"` and renders their editable fields from `chain_params`, matching the rest of the Shadow UI module workflow. Native pad behavior is shown as a built-in selector option at the top.
+
+The current core test module exposes a `Layout` enum. Its host-backed values map to:
+
+| Layout value | Host mode | Behavior |
+|--------------|-----------|----------|
+| `native` | `0` Native | Pad notes pass through to Move unchanged. |
+| `true_chromatic_poc` | `1` Chromatic | Pads 68-99 are remapped to notes 48-79 and injected on the selected track channel. |
+| `drum32` | `2` Drum32 | Pads 68-99 are remapped to notes 36-67. |
+| `chord_pads` | `3` Chord Pads | Each pad emits a three-note triad with matching note-offs. |
+
+Input modes are saved per set in `input_modes.json`. See [INPUT_MODES.md](INPUT_MODES.md) for the user workflow and persistence format.
+
+The shim only overrides pad input when Move's pad LED grid is classified as a playable Note layout. The classifier is sampled after native navigation gestures that repaint the pads, ignores currently held pads, accepts note/chromatic/drum LED patterns, and fails closed for track/set/navigation layouts. `shadow_get_move_ui_mode()` is updated from this inference for diagnostics, but input remapping is gated by the LED classifier.
+
+Modules can read the active set's musical context with `shadow_get_set_musical_context()`. The values come from the current set file's `rootNote`, `scale`, and `melodicLayout` fields when available:
+
+```javascript
+const ctx = shadow_get_set_musical_context();
+// { valid: true, rootNote: 11, scale: "Major", melodicLayout: "inKey" }
+```
 
 ### Velocity Curve
 

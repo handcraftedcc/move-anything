@@ -130,6 +130,11 @@ void shadow_drain_ui_midi_dsp(void);
 /* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl). */
 void shadow_drain_midi_inject(void);
 
+/* Force a short defer before the next MIDI inject drain.
+ * Used when callers synthesize cable-2 notes from a cable-0 hardware event
+ * that they have already blocked from Move's MIDI_IN scan. */
+void shadow_midi_force_defer(int frames);
+
 /* Queue a 4-byte USB-MIDI packet for MIDI_IN injection (Pre-mode MIDI FX).
  * Cable nibble is ignored by the drain (forced to 0).
  * Returns 4 on success, 0 if SHM unavailable or ring full. */

@@ -22,6 +22,11 @@ Covers all commits since `v0.9.6` (Apr 14) through `89c1d749`.
   holding the track button and touching the volume knob no longer opens
   the shadow UI — once the knob is touched during a track hold, that
   track's long-press is suppressed for the rest of the press.
+- **Input Mode menu** via Shift+Vol+Step 9. Tracks can now choose Native
+  or an input module from the Shadow UI module selector. The core Test
+  module exposes a `Layout` enum for None/Native, 32 Drum Pads,
+  Chromatic, and Chords, with settings saved per set in
+  `input_modes.json`.
 - **Analytics opt-out** with first-run prompt (5f56cd25).
 - **Tempo persistence** across subscriber restarts; **mute/solo
   persistence** across power cycles. Set-change also now forces Link

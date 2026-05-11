@@ -46,6 +46,7 @@ static int *host_slot_idle;
 static int *host_slot_silence_frames;
 static int *host_slot_fx_idle;
 static int *host_slot_fx_silence_frames;
+static int midi_inject_forced_defer_frames = 0;
 
 void midi_routing_init(const midi_host_t *host)
 {
@@ -409,6 +410,11 @@ void shadow_drain_midi_inject(void)
 
     if (!inject_shm) return;
 
+    if (midi_inject_forced_defer_frames > 0) {
+        midi_inject_forced_defer_frames--;
+        return;
+    }
+
     /* Defer cable-2 injection when there's cable-0 hardware activity in the
      * SAME tick. Injecting concurrently with a live pad event appears to
      * race Move's firmware (observed: SIGABRT deep in Move's stack after
@@ -511,6 +517,13 @@ void shadow_drain_midi_inject(void)
                  hw_offset - injected * MIDI_IN_EVT_STRIDE,
                  remaining > 0 ? " [carryover]" : "");
         host_log(dbg);
+    }
+}
+
+void shadow_midi_force_defer(int frames)
+{
+    if (frames > midi_inject_forced_defer_frames) {
+        midi_inject_forced_defer_frames = frames;
     }
 }
 

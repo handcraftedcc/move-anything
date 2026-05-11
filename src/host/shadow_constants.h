@@ -51,7 +51,9 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 72  /* bumped for sampler_source_request + sampler_silent (PR #61); leaves headroom in reserved[] */
+#define SHADOW_SET_SCALE_LEN 32
+#define SHADOW_SET_LAYOUT_LEN 32
+#define CONTROL_BUFFER_SIZE 144  /* Includes input-mode config and set musical context. */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 #define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
@@ -89,6 +91,9 @@
 #define SHADOW_UI_FLAG_SET_CHANGED 0x20           /* Set changed - reload slot state */
 #define SHADOW_UI_FLAG_JUMP_TO_SETTINGS 0x40     /* Jump to Global Settings */
 #define SHADOW_UI_FLAG_JUMP_TO_TOOLS 0x80        /* Jump to Tools menu */
+
+/* Secondary UI flags (set in shadow_control_t.ui_flags2) */
+#define SHADOW_UI_FLAG2_JUMP_TO_INPUT_MODE 0x01  /* Jump to Input Mode menu */
 
 /* ============================================================================
  * Special Values
@@ -155,7 +160,14 @@ typedef struct shadow_control_t {
     volatile uint8_t sampler_silent;     /* 1=suppress sampler screen-reader announcements (e.g. "Sample saved") for tool-driven recordings */
     volatile uint16_t skipback_seconds; /* Skipback rolling buffer length: 30/60/120/180/240/300 */
     volatile uint8_t resume_last_tool;  /* 1=JUMP_TO_TOOLS should resume the most-recently-suspended tool instead of opening the menu */
-    volatile uint8_t reserved[6];
+    volatile uint8_t ui_flags2;         /* Secondary UI flags (SHADOW_UI_FLAG2_*) */
+    volatile uint8_t input_active_track; /* Currently selected input-mode track (0-3) */
+    volatile uint8_t input_track_modes[SHADOW_UI_SLOTS]; /* schwung_input_mode_t per track */
+    volatile uint8_t input_led_modes[SHADOW_UI_SLOTS];   /* schwung_input_led_mode_t per track */
+    volatile uint8_t set_musical_context_valid; /* 1 when root/scale/layout were read from current set */
+    volatile uint8_t set_root_note;             /* 0-11, 255 when unknown */
+    volatile char set_scale[SHADOW_SET_SCALE_LEN];
+    volatile char set_melodic_layout[SHADOW_SET_LAYOUT_LEN];
 } shadow_control_t;
 
 /*

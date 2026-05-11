@@ -80,7 +80,7 @@ for keys anywhere in `module.json`).
 | `default_forward_channel` | Default Forward Channel for shadow slots loading this module. `-2` = passthrough (preserve original MIDI channel, required for MPE), `1`–`16` = remap to a specific channel. |
 | `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
-| `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
+| `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `input_mode`, `utility`, `system`, `featured`, `overtake`, or `tool` |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -112,6 +112,27 @@ Tool modules (`"component_type": "tool"`) appear in the Tools menu and support a
 | `overtake` | `true` to use overtake display mode (full LED clear, ~500ms init delay, Shift+Vol+Jog-Click exit). Default is `false`. |
 
 Interactive tools use `host_exit_module()` to return to the tools menu when the user presses Back.
+
+## Input Modes
+
+Input Modes are host-level pad transforms discovered with `component_type: "input_mode"`. Each track can choose its own input module independently of the loaded synth, MIDI FX, or tool.
+
+The Shadow UI treats input modes like the other module-backed chain slots:
+
+- Opening the Input Mode menu on a Native track shows a module selector with **Native** at the top.
+- Selecting an input module opens that module's detail page.
+- Module detail pages are generated from `chain_params` metadata in `module.json`.
+- Every input module detail page gets an automatic **Swap Module** row that returns to the selector.
+
+The current core test module is `src/modules/input_modes/test/module.json`. It exposes a `Layout` enum with **None/Native**, **32 Drum Pads**, **Chromatic**, and **Chords**. The real-time mapping is host-backed for now; `module.json` owns the menu shape and saved parameter values.
+
+Single-layout host-backed input modules can declare their MIDI behavior with `input_mode.mode` in `module.json`. Editable parameters named `layout`, `mode`, `host_mode`, or `input_mode` take priority over that module default.
+
+Input modules that need the current set key/scale can use `shadow_get_set_musical_context()` from the Shadow UI runtime. It returns the active set's `rootNote`, `scale`, and `melodicLayout` when those fields were read from `Song.abl`.
+
+At runtime, pad remapping is enabled by a shim-side classifier that watches Move's pad LED grid after native navigation gestures repaint it. Playable note/chromatic/drum LED layouts allow input modules to rewrite pads; track, set, and unknown LED layouts pass pads through.
+
+Users open the menu with Shift + Volume Touch + Step 9. Settings are saved per set in `input_modes.json`; see [INPUT_MODES.md](INPUT_MODES.md) for the full format and shim behavior.
 
 ### Defaults
 
@@ -1994,7 +2015,7 @@ Each module in `module-catalog.json`:
   "name": "Display Name",
   "description": "Short description",
   "author": "Author Name",
-  "component_type": "sound_generator|audio_fx|midi_fx|overtake|utility|tool",
+  "component_type": "sound_generator|audio_fx|midi_fx|input_mode|overtake|utility|tool",
   "github_repo": "username/repo-name",
   "default_branch": "main",
   "asset_name": "module-id-module.tar.gz",
@@ -2009,7 +2030,7 @@ Each module in `module-catalog.json`:
 | `name` | Yes | Display name |
 | `description` | Yes | Short description |
 | `author` | Yes | Author name |
-| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `overtake`, `utility`, `tool` |
+| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `input_mode`, `overtake`, `utility`, `tool` |
 | `github_repo` | Yes | GitHub `owner/repo` |
 | `default_branch` | Yes | Branch to fetch `release.json` from (usually `main`) |
 | `asset_name` | Yes | Expected tarball filename |

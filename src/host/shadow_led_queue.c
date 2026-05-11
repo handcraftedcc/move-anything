@@ -39,6 +39,7 @@ static uint8_t move_note_led_status[128];
 static int move_cc_led_state[128];           /* -1 = unknown, else color */
 static uint8_t move_cc_led_cin[128];
 static uint8_t move_cc_led_status[128];
+static uint32_t move_pad_led_generation = 0;
 
 /* JACK LED state cache — continuously accumulated from JACK MIDI output.
  * On suspend we keep this intact; on resume we replay it to restore RNBO's LEDs. */
@@ -70,6 +71,8 @@ static int prev_overtake_mode = 0;
 static const int hw_note_leds[] = {
     /* Steps 1-16 */
     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    /* Track selectors */
+    40, 41, 42, 43,
     /* Pads 1-32 */
     68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
     80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91,
@@ -78,8 +81,8 @@ static const int hw_note_leds[] = {
 #define HW_NOTE_LED_COUNT (sizeof(hw_note_leds) / sizeof(hw_note_leds[0]))
 
 static const int hw_cc_leds[] = {
-    /* Track row LEDs */
-    40, 41, 42, 43,
+    /* Step UI under steps */
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     /* White LED buttons */
     49, 50, 51, 52, 54, 55, 56, 58, 60, 62, 63,
     /* Encoder/knob LEDs (RGB, set via CC on ch16) */
@@ -109,6 +112,7 @@ void led_queue_init(const led_queue_host_t *h) {
     move_led_clear_pending = 0;
     move_led_pass_count = 0;
     prev_overtake_mode = 0;
+    move_pad_led_generation = 0;
     for (int i = 0; i < 128; i++) {
         move_note_led_state[i] = -1;
         move_cc_led_state[i] = -1;
@@ -235,10 +239,16 @@ void shadow_clear_move_leds_if_overtake(void) {
             if (cable == 0 && (type == 0x90 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
-                if (type == 0x90) {
-                    move_note_led_state[d1] = d2;
-                    move_note_led_status[d1] = midi_out[i+1];
-                    move_note_led_cin[d1] = midi_out[i];
+	                if (type == 0x90) {
+	                    if (d1 >= 68 && d1 <= 99) {
+	                        move_pad_led_generation++;
+	                        LOG_INFO("input_mode_led",
+	                                 "led out note=%u color=%u old=%d",
+	                                 d1, d2, move_note_led_state[d1]);
+	                    }
+	                    move_note_led_state[d1] = d2;
+	                    move_note_led_status[d1] = midi_out[i+1];
+	                    move_note_led_cin[d1] = midi_out[i];
                 } else {
                     move_cc_led_state[d1] = d2;
                     move_cc_led_status[d1] = midi_out[i+1];
@@ -521,6 +531,18 @@ void shadow_queue_input_led(uint8_t cin, uint8_t status, uint8_t note, uint8_t v
 int led_queue_get_note_led_color(int note) {
     if (note < 0 || note >= 128) return -1;
     return move_note_led_state[note];
+}
+
+uint32_t led_queue_get_pad_led_generation(void) {
+    return move_pad_led_generation;
+}
+
+void led_queue_clear_pad_led_cache(void) {
+    for (int note = 68; note <= 99; note++) {
+        move_note_led_state[note] = -1;
+        move_note_led_status[note] = 0;
+        move_note_led_cin[note] = 0;
+    }
 }
 
 void led_queue_cache_jack_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2) {

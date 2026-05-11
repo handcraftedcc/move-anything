@@ -91,6 +91,12 @@ The shim owns these subsystems:
 - **Long-press / Shift+Vol shortcuts** — gated by the
   `shadow_ui_trigger` setting (Long Press / Shift+Vol / Both); see
   `MANUAL.md` and the dispatch in `schwung_shim.c`.
+- **Input Modes** — per-track pad transforms discovered from
+  `component_type: "input_mode"` modules, configured from
+  Shift+Vol+Step 9 and persisted per set. Overrides are applied only
+  when Move is known to be in Note mode. The active set's
+  `rootNote`, `scale`, and `melodicLayout` are mirrored for modules.
+  See `docs/INPUT_MODES.md`.
 - **Slot DSP and Master FX** — `chain_host` is dlopen'd in-process;
   per-slot synth/FX state lives here.
 - **Master volume + ME bus mix** — ME-only-bus refactor (2026-04):

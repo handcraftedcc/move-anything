@@ -130,6 +130,7 @@ Valid component types:
 - `sound_generator` - Synths and samplers
 - `audio_fx` - Audio effects
 - `midi_fx` - MIDI processors
+- `input_mode` - Host-level pad input transforms (Input Mode menu)
 - `utility` - Utility modules
 - `overtake` - Overtake modules (full UI control in shadow mode)
 - `tool` - Tool modules (accessed via Tools menu, e.g. File Browser, Song Mode)
@@ -204,6 +205,13 @@ host_get_setting(key)         // -> value (velocity_curve, aftertouch_enabled, a
 host_set_setting(key, val)    // set setting
 host_save_settings()          // persist to disk
 host_reload_settings()        // reload from disk
+
+// Shadow input modes (shadow_ui only)
+shadow_get_input_active_track()
+shadow_get_input_track_mode(track) / shadow_set_input_track_mode(track, mode)
+shadow_get_input_led_mode(track) / shadow_set_input_led_mode(track, mode)
+shadow_get_set_musical_context() // -> {valid, rootNote, scale, melodicLayout}
+// Runtime pad remapping is gated by the shim's navigation-triggered pad-LED classifier.
 
 // Display control
 host_flush_display()          // Force immediate display update
@@ -546,6 +554,7 @@ Shift+Vol combos (active in modes Both / Shift+Vol):
 - **Shift+Vol+Track 1-4**: Open shadow mode / jump to slot settings (works from Move or Shadow UI)
 - **Shift+Vol+Menu**: Jump directly to Master FX settings
 - **Shift+Vol+Step2**: Open Global Settings
+- **Shift+Vol+Step9**: Open Input Mode menu
 - **Shift+Vol+Step13**: Open Tools menu
 - **Shift+Vol+Jog Click**: Open Tools menu (overtake modules live below the divider), or exit active overtake module
 - **Shift+Sample**: Open Quantized Sampler
@@ -791,7 +800,7 @@ Optional fields: `install_path`, `name`, `description`, `requires`, `post_instal
 | `name` | Yes | Display name |
 | `description` | Yes | Short description |
 | `author` | Yes | Author name |
-| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `overtake`, `utility`, `tool` |
+| `component_type` | Yes | `sound_generator`, `audio_fx`, `midi_fx`, `input_mode`, `overtake`, `utility`, `tool` |
 | `github_repo` | Yes | GitHub `owner/repo` |
 | `default_branch` | Yes | Branch to fetch `release.json` from (usually `main`) |
 | `asset_name` | Yes | Expected tarball filename |

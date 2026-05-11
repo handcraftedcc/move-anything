@@ -372,6 +372,117 @@ static int shadow_detect_copy_source(const char *set_name, const char *new_uuid,
     return 0;
 }
 
+static void copy_to_volatile_char(volatile char *dst, size_t dst_len, const char *src) {
+    if (!dst || dst_len == 0) return;
+    size_t i = 0;
+    if (src) {
+        for (; i + 1 < dst_len && src[i]; i++) {
+            dst[i] = src[i];
+        }
+    }
+    dst[i] = '\0';
+}
+
+static int json_extract_int(const char *json, const char *key, int *out) {
+    if (!json || !key || !out) return 0;
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char *p = strstr(json, needle);
+    if (!p) return 0;
+    p = strchr(p, ':');
+    if (!p) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    char *end = NULL;
+    long val = strtol(p, &end, 10);
+    if (end == p) return 0;
+    *out = (int)val;
+    return 1;
+}
+
+static int json_extract_string(const char *json, const char *key, char *out, size_t out_len) {
+    if (!json || !key || !out || out_len == 0) return 0;
+    out[0] = '\0';
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char *p = strstr(json, needle);
+    if (!p) return 0;
+    p = strchr(p, ':');
+    if (!p) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p != '"') return 0;
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < out_len) {
+        if (*p == '\\' && p[1]) p++;
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+static int find_set_song_path(const char *set_name, const char *uuid, char *out, size_t out_len) {
+    if (!set_name || !set_name[0] || !uuid || !uuid[0] || !out || out_len == 0) return 0;
+    if (strncmp(uuid, "__pending-", 10) == 0) return 0;
+
+    snprintf(out, out_len, "%s/%s/%s/Song.abl", SAMPLER_SETS_DIR, uuid, set_name);
+    struct stat st;
+    if (stat(out, &st) == 0 && S_ISREG(st.st_mode)) return 1;
+
+    char uuid_path[512];
+    snprintf(uuid_path, sizeof(uuid_path), "%s/%s", SAMPLER_SETS_DIR, uuid);
+    DIR *uuid_dir = opendir(uuid_path);
+    if (!uuid_dir) return 0;
+    struct dirent *sub;
+    while ((sub = readdir(uuid_dir)) != NULL) {
+        if (sub->d_name[0] == '.') continue;
+        snprintf(out, out_len, "%s/%s/Song.abl", uuid_path, sub->d_name);
+        if (stat(out, &st) == 0 && S_ISREG(st.st_mode)) {
+            closedir(uuid_dir);
+            return 1;
+        }
+    }
+    closedir(uuid_dir);
+    out[0] = '\0';
+    return 0;
+}
+
+void shadow_refresh_set_musical_context(const char *set_name, const char *uuid) {
+    shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+    if (!ctrl) return;
+
+    ctrl->set_musical_context_valid = 0;
+    ctrl->set_root_note = 255;
+    ctrl->set_scale[0] = '\0';
+    ctrl->set_melodic_layout[0] = '\0';
+
+    char song_path[768];
+    if (!find_set_song_path(set_name, uuid, song_path, sizeof(song_path))) return;
+
+    FILE *f = fopen(song_path, "r");
+    if (!f) return;
+    char buf[65536];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return;
+    buf[n] = '\0';
+
+    int root_note = -1;
+    char scale[SHADOW_SET_SCALE_LEN];
+    char layout[SHADOW_SET_LAYOUT_LEN];
+    int have_root = json_extract_int(buf, "rootNote", &root_note);
+    int have_scale = json_extract_string(buf, "scale", scale, sizeof(scale));
+    int have_layout = json_extract_string(buf, "melodicLayout", layout, sizeof(layout));
+
+    if (have_root && root_note >= 0 && root_note <= 11) {
+        ctrl->set_root_note = (uint8_t)root_note;
+    }
+    if (have_scale) copy_to_volatile_char(ctrl->set_scale, SHADOW_SET_SCALE_LEN, scale);
+    if (have_layout) copy_to_volatile_char(ctrl->set_melodic_layout, SHADOW_SET_LAYOUT_LEN, layout);
+    ctrl->set_musical_context_valid = (have_root || have_scale || have_layout) ? 1 : 0;
+}
+
 /* Handle a Set being loaded — called from Settings.json poll.
  * set_name: human-readable name (e.g. "My Song")
  * uuid: UUID directory name from Sets/<UUID>/<Name>/ path
@@ -394,6 +505,7 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
     }
+    shadow_refresh_set_musical_context(set_name, uuid);
 
     /* Signal shadow UI to handle ALL file I/O (active_set.txt, config,
      * tempo read, etc.) — zero file ops on the audio thread. */

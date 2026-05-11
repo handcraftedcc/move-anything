@@ -632,6 +632,7 @@ component_type_to_subdir() {
     sound_generator) echo "sound_generators" ;;
     audio_fx) echo "audio_fx" ;;
     midi_fx) echo "midi_fx" ;;
+    input_mode) echo "input_modes" ;;
     utility) echo "utilities" ;;
     overtake) echo "overtake" ;;
     tool) echo "tools" ;;
@@ -644,7 +645,7 @@ if [ "$module_action" = "uninstall" ]; then
   echo "Searching for module '$mod_id' on device..."
 
   # Search all category subdirectories for the module
-  mod_path=$($ssh_ableton "for subdir in sound_generators audio_fx midi_fx utilities overtake tools other; do
+  mod_path=$($ssh_ableton "for subdir in sound_generators audio_fx midi_fx input_modes utilities overtake tools other; do
     if [ -d /data/UserData/schwung/modules/\$subdir/$mod_id ]; then
       echo \"modules/\$subdir/$mod_id\"
       exit 0

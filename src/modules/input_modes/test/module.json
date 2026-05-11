@@ -1,0 +1,27 @@
+{
+  "id": "test",
+  "name": "Test",
+  "version": "0.1.0",
+  "api_version": 1,
+  "component_type": "input_mode",
+  "description": "Core test input mode for validating native, drum, chromatic, and chord pad layouts.",
+  "author": "Schwung",
+  "capabilities": {
+    "input_mode": true,
+    "pad_led_modes": ["pass_through"]
+  },
+  "input_mode": {
+    "engine": "host_static"
+  },
+  "chain_params": [
+    {
+      "key": "layout",
+      "name": "Layout",
+      "label": "Layout",
+      "type": "enum",
+      "options": ["None/Native", "32 Drum Pads", "Chromatic", "Chords"],
+      "values": ["native", "drum32", "true_chromatic_poc", "chord_pads"],
+      "default": "native"
+    }
+  ]
+}

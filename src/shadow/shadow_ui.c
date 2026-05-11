@@ -323,6 +323,78 @@ static JSValue js_shadow_clear_ui_flags(JSContext *ctx, JSValueConst this_val, i
     return JS_UNDEFINED;
 }
 
+/* shadow_get_ui_flags2() -> int
+ * Returns secondary UI flags from shared memory.
+ */
+static JSValue js_shadow_get_ui_flags2(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->ui_flags2);
+}
+
+/* shadow_clear_ui_flags2(mask) -> void
+ * Clears the specified flags from ui_flags2.
+ */
+static JSValue js_shadow_clear_ui_flags2(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int mask = 0;
+    if (JS_ToInt32(ctx, &mask, argv[0])) return JS_UNDEFINED;
+    shadow_control->ui_flags2 &= ~(uint8_t)mask;
+    return JS_UNDEFINED;
+}
+
+static int js_track_arg(JSContext *ctx, JSValueConst *argv, int *track) {
+    if (JS_ToInt32(ctx, track, argv[0])) return 0;
+    return (*track >= 0 && *track < SHADOW_UI_SLOTS);
+}
+
+static JSValue js_shadow_get_input_active_track(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->input_active_track);
+}
+
+static JSValue js_shadow_get_input_track_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_NewInt32(ctx, 0);
+    int track = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->input_track_modes[track]);
+}
+
+static JSValue js_shadow_set_input_track_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int track = 0;
+    int mode = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &mode, argv[1])) return JS_UNDEFINED;
+    if (mode < 0 || mode > 3) mode = 0;
+    shadow_control->input_track_modes[track] = (uint8_t)mode;
+    return JS_UNDEFINED;
+}
+
+static JSValue js_shadow_get_input_led_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_NewInt32(ctx, 0);
+    int track = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->input_led_modes[track]);
+}
+
+static JSValue js_shadow_set_input_led_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int track = 0;
+    int mode = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &mode, argv[1])) return JS_UNDEFINED;
+    if (mode != 1) mode = 0;
+    shadow_control->input_led_modes[track] = (uint8_t)mode;
+    return JS_UNDEFINED;
+}
+
 /* shadow_get_selected_slot() -> int
  * Returns the track-selected slot (0-3) for playback/knobs.
  */
@@ -367,6 +439,30 @@ static JSValue js_shadow_get_move_ui_mode(JSContext *ctx, JSValueConst this_val,
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
     return JS_NewInt32(ctx, shadow_control->move_ui_mode);
+}
+
+/* shadow_get_set_musical_context() -> object
+ * Returns current set root/scale/layout read by the shim from Song.abl.
+ */
+static JSValue js_shadow_get_set_musical_context(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    JSValue obj = JS_NewObject(ctx);
+    if (!shadow_control) {
+        JS_SetPropertyStr(ctx, obj, "valid", JS_NewBool(ctx, 0));
+        JS_SetPropertyStr(ctx, obj, "rootNote", JS_NewInt32(ctx, -1));
+        JS_SetPropertyStr(ctx, obj, "scale", JS_NewString(ctx, ""));
+        JS_SetPropertyStr(ctx, obj, "melodicLayout", JS_NewString(ctx, ""));
+        return obj;
+    }
+    int valid = shadow_control->set_musical_context_valid ? 1 : 0;
+    int root_note = valid && shadow_control->set_root_note <= 11
+        ? shadow_control->set_root_note
+        : -1;
+    JS_SetPropertyStr(ctx, obj, "valid", JS_NewBool(ctx, valid));
+    JS_SetPropertyStr(ctx, obj, "rootNote", JS_NewInt32(ctx, root_note));
+    JS_SetPropertyStr(ctx, obj, "scale", JS_NewString(ctx, (const char *)shadow_control->set_scale));
+    JS_SetPropertyStr(ctx, obj, "melodicLayout", JS_NewString(ctx, (const char *)shadow_control->set_melodic_layout));
+    return obj;
 }
 
 /* shadow_set_overtake_mode(mode) -> void
@@ -1936,7 +2032,7 @@ static JSValue js_host_list_modules(JSContext *ctx, JSValueConst this_val,
     int idx = 0;
 
     /* Subdirectories to scan */
-    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "utilities", "overtake", "tools", "other", NULL };
+    const char *subdirs[] = { "", "sound_generators", "audio_fx", "midi_fx", "input_modes", "utilities", "overtake", "tools", "other", NULL };
 
     for (int s = 0; subdirs[s] != NULL; s++) {
         char dir_path[512];
@@ -2955,6 +3051,7 @@ static JSValue js_host_get_module_metadata(JSContext *ctx, JSValueConst this_val
         "/data/UserData/schwung/modules/sound_generators",
         "/data/UserData/schwung/modules/audio_fx",
         "/data/UserData/schwung/modules/midi_fx",
+        "/data/UserData/schwung/modules/input_modes",
         "/data/UserData/schwung/modules/tools",
     };
     char path[512];
@@ -3073,6 +3170,13 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags2", JS_NewCFunction(ctx, js_shadow_get_ui_flags2, "shadow_get_ui_flags2", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags2", JS_NewCFunction(ctx, js_shadow_clear_ui_flags2, "shadow_clear_ui_flags2", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_active_track", JS_NewCFunction(ctx, js_shadow_get_input_active_track, "shadow_get_input_active_track", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_track_mode", JS_NewCFunction(ctx, js_shadow_get_input_track_mode, "shadow_get_input_track_mode", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_track_mode", JS_NewCFunction(ctx, js_shadow_set_input_track_mode, "shadow_set_input_track_mode", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_led_mode", JS_NewCFunction(ctx, js_shadow_get_input_led_mode, "shadow_get_input_led_mode", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_led_mode", JS_NewCFunction(ctx, js_shadow_set_input_led_mode, "shadow_set_input_led_mode", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",
         JS_NewCFunction(ctx, js_shadow_get_open_tool_cmd, "shadow_get_open_tool_cmd", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));
@@ -3080,6 +3184,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_shift_held", JS_NewCFunction(ctx, js_shadow_get_shift_held, "shadow_get_shift_held", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_set_musical_context", JS_NewCFunction(ctx, js_shadow_get_set_musical_context, "shadow_get_set_musical_context", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_suspend_overtake", JS_NewCFunction(ctx, js_shadow_set_suspend_overtake, "shadow_set_suspend_overtake", 1));

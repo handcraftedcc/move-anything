@@ -206,6 +206,7 @@ const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
 const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
+const SHADOW_UI_FLAG2_JUMP_TO_INPUT_MODE = 0x01;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -221,6 +222,7 @@ let overtakeJogDelta = 0;                             // Accumulated delta for j
 const CONFIG_PATH = "/data/UserData/schwung/shadow_chain_config.json";
 const PATCH_DIR = "/data/UserData/schwung/patches";
 const SLOT_STATE_DIR_DEFAULT = "/data/UserData/schwung/slot_state";
+const INPUT_MODE_STATE_FILE = "input_modes.json";
 let activeSlotStateDir = SLOT_STATE_DIR_DEFAULT;
 const AUTOSAVE_INTERVAL = 300;  /* ~10 seconds at 30fps */
 const DEFAULT_SLOTS = [
@@ -268,6 +270,8 @@ const VIEWS = {
     TOOL_ENGINE_SELECT: "toolengineselect",  // Pick engine (e.g. 3-stem vs 4-stem)
     TOOL_STEM_REVIEW: "toolstemreview",       // Review produced stems before saving
     TOOL_SET_PICKER: "toolsetpicker",         // Browse sets for render tool
+    INPUT_MODE_SELECT: "inputmodesel",        // Input mode module picker
+    INPUT_MODE: "inputmode",                  // Per-track pad input mode
     LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
     ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
@@ -276,6 +280,25 @@ const VIEWS = {
 
 /* Special action key for swap module option */
 const SWAP_MODULE_ACTION = "__swap_module__";
+
+const INPUT_MODE_NATIVE = 0;
+const INPUT_MODE_TRUE_CHROMATIC_POC = 1;
+const INPUT_MODE_DRUM32 = 2;
+const INPUT_MODE_CHORD_PADS = 3;
+const INPUT_LED_PASS_THROUGH = 0;
+const INPUT_LED_MODULE = 1;
+const INPUT_MODE_NATIVE_MODULE = {
+    id: "native",
+    name: "Native",
+    component_type: "input_mode",
+    input_mode: { engine: "native" },
+    chain_params: []
+};
+let inputModeModules = [INPUT_MODE_NATIVE_MODULE];
+const INPUT_LED_OPTIONS = [
+    { value: INPUT_LED_PASS_THROUGH, key: "pass_through", label: "Native" },
+    { value: INPUT_LED_MODULE, key: "module", label: "Module" }
+];
 
 /* Chain component types for horizontal editor */
 const CHAIN_COMPONENTS = [
@@ -310,6 +333,15 @@ let slots = [];
 let patches = [];
 let selectedSlot = 0;
 let selectedPatch = 0;
+let inputModeSelectedRow = 0;
+let inputModeSelectorIndex = 0;
+let inputModeSelectedModule = ["native", "native", "native", "native"];
+let inputModeTrackParams = [
+    { layout: "native" },
+    { layout: "native" },
+    { layout: "native" },
+    { layout: "native" }
+];
 /* selectedDetailItem moved to shadow_ui_patches.mjs */
 /* selectedSetting, editingSettingValue moved to shadow_ui_slots.mjs */
 let view = VIEWS.SLOTS;
@@ -463,6 +495,8 @@ const VIEW_NAMES = {
     [VIEWS.TOOL_ENGINE_SELECT]: "Engine Selection",
     [VIEWS.TOOL_STEM_REVIEW]: "Stem Review",
     [VIEWS.TOOL_SET_PICKER]: "Choose Set",
+    [VIEWS.INPUT_MODE_SELECT]: "Input Mode",
+    [VIEWS.INPUT_MODE]: "Input Mode",
     [VIEWS.LFO_EDIT]: "LFO Editor",
     [VIEWS.LFO_TARGET_COMPONENT]: "LFO Target",
     [VIEWS.LFO_TARGET_PARAM]: "LFO Parameter"
@@ -475,6 +509,340 @@ function setView(newView, customLabel) {
     needsRedraw = true;
 
     /* Note: View announcements now happen in enter*() functions with full context */
+}
+
+function inputLedOptionFromValue(value) {
+    if (typeof value === "string") {
+        const found = INPUT_LED_OPTIONS.find(o => o.key === value);
+        return found ? found.value : INPUT_LED_PASS_THROUGH;
+    }
+    return value === INPUT_LED_MODULE ? INPUT_LED_MODULE : INPUT_LED_PASS_THROUGH;
+}
+
+function layoutToInputModeValue(layout) {
+    if (layout === "true_chromatic_poc" || layout === "true-chromatic" || layout === "chromatic") return INPUT_MODE_TRUE_CHROMATIC_POC;
+    if (layout === "drum32" || layout === "32-drum-pads" || layout === "drum-pads") return INPUT_MODE_DRUM32;
+    if (layout === "chord_pads" || layout === "chord-pads" || layout === "chords") return INPUT_MODE_CHORD_PADS;
+    return INPUT_MODE_NATIVE;
+}
+
+function inputModeValueToLayout(mode) {
+    if (mode === INPUT_MODE_TRUE_CHROMATIC_POC) return "true_chromatic_poc";
+    if (mode === INPUT_MODE_DRUM32) return "drum32";
+    if (mode === INPUT_MODE_CHORD_PADS) return "chord_pads";
+    return "native";
+}
+
+function moduleToInputModeValue(module, params) {
+    if (!module || module.id === "native") return INPUT_MODE_NATIVE;
+    const inputMeta = module.input_mode || {};
+    const candidates = [
+        params ? params.layout : null,
+        params ? params.mode : null,
+        params ? params.host_mode : null,
+        params ? params.input_mode : null,
+        inputMeta.layout,
+        inputMeta.mode,
+        inputMeta.host_mode,
+        inputMeta.input_mode,
+        module.id
+    ];
+    for (const candidate of candidates) {
+        if (candidate === undefined || candidate === null || candidate === "") continue;
+        const mode = layoutToInputModeValue(String(candidate));
+        if (mode !== INPUT_MODE_NATIVE || String(candidate) === "native") return mode;
+    }
+    return INPUT_MODE_NATIVE;
+}
+
+function getInputModeModuleById(id) {
+    return inputModeModules.find(m => m.id === id) || INPUT_MODE_NATIVE_MODULE;
+}
+
+function getInputModeParams(module) {
+    if (!module) return [];
+    if (Array.isArray(module.chain_params)) return module.chain_params;
+    if (module.input_mode && Array.isArray(module.input_mode.params)) return module.input_mode.params;
+    return [];
+}
+
+function getInputModeParamValue(track, param) {
+    const params = inputModeTrackParams[track] || {};
+    if (params[param.key] !== undefined) return params[param.key];
+    if (param.default !== undefined) return param.default;
+    if (Array.isArray(param.values) && param.values.length > 0) return param.values[0];
+    if (Array.isArray(param.options) && param.options.length > 0) return param.options[0];
+    return "";
+}
+
+function formatInputModeParamValue(track, param) {
+    const value = getInputModeParamValue(track, param);
+    if (param.type === "enum" && Array.isArray(param.values) && Array.isArray(param.options)) {
+        const idx = param.values.indexOf(value);
+        if (idx >= 0 && idx < param.options.length) return param.options[idx];
+    }
+    return String(value);
+}
+
+function selectedInputModeName(track) {
+    return getInputModeModuleById(inputModeSelectedModule[track]).name || "Native";
+}
+
+function applyInputModeTrackConfig(track) {
+    const moduleId = inputModeSelectedModule[track] || "native";
+    const params = inputModeTrackParams[track] || {};
+    const module = getInputModeModuleById(moduleId);
+    setInputTrackMode(track, moduleToInputModeValue(module, params));
+}
+
+function refreshInputModeModules() {
+    const discovered = [INPUT_MODE_NATIVE_MODULE];
+    if (typeof host_list_modules === "function") {
+        try {
+            const modules = host_list_modules() || [];
+            for (const mod of modules) {
+                if (!mod || mod.component_type !== "input_mode") continue;
+                let meta = null;
+                if (typeof host_get_module_metadata === "function") {
+                    try { meta = host_get_module_metadata(mod.id); } catch (e) { meta = null; }
+                }
+                discovered.push(Object.assign({}, mod, meta || {}, {
+                    id: mod.id,
+                    name: (meta && meta.name) || mod.name || mod.id
+                }));
+            }
+        } catch (e) {
+            debugLog("refreshInputModeModules error: " + e);
+        }
+    }
+
+    inputModeModules = discovered;
+}
+
+function inputLedKey(mode) {
+    const found = INPUT_LED_OPTIONS.find(o => o.value === mode);
+    return found ? found.key : "pass_through";
+}
+
+function getInputModeTrack() {
+    let track = selectedSlot;
+    if (typeof shadow_get_input_active_track === "function") {
+        track = shadow_get_input_active_track();
+    }
+    if (track < 0 || track >= SHADOW_UI_SLOTS) track = selectedSlot;
+    if (track < 0 || track >= SHADOW_UI_SLOTS) track = 0;
+    return track;
+}
+
+function getInputTrackMode(track) {
+    if (typeof shadow_get_input_track_mode !== "function") return INPUT_MODE_NATIVE;
+    const mode = shadow_get_input_track_mode(track);
+    return mode >= INPUT_MODE_NATIVE && mode <= INPUT_MODE_CHORD_PADS ? mode : INPUT_MODE_NATIVE;
+}
+
+function setInputTrackMode(track, mode) {
+    if (typeof shadow_set_input_track_mode === "function") {
+        shadow_set_input_track_mode(track, mode >= INPUT_MODE_NATIVE && mode <= INPUT_MODE_CHORD_PADS ? mode : INPUT_MODE_NATIVE);
+    }
+}
+
+function getInputLedMode(track) {
+    if (typeof shadow_get_input_led_mode !== "function") return INPUT_LED_PASS_THROUGH;
+    return inputLedOptionFromValue(shadow_get_input_led_mode(track));
+}
+
+function setInputLedMode(track, mode) {
+    if (typeof shadow_set_input_led_mode === "function") {
+        shadow_set_input_led_mode(track, inputLedOptionFromValue(mode));
+    }
+}
+
+function inputModesPathForDir(dir) {
+    return dir + "/" + INPUT_MODE_STATE_FILE;
+}
+
+function saveInputModesToDir(dir) {
+    if (!dir) return;
+    const tracks = {};
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        tracks[String(i + 1)] = {
+            module: inputModeSelectedModule[i] || "native",
+            params: inputModeTrackParams[i] || {},
+            mode: inputModeValueToLayout(getInputTrackMode(i)),
+            led_mode: inputLedKey(getInputLedMode(i))
+        };
+    }
+    try {
+        if (typeof host_ensure_dir === "function") host_ensure_dir(dir);
+        host_write_file(inputModesPathForDir(dir), JSON.stringify({ input_modes: { tracks } }, null, 2) + "\n");
+    } catch (e) {
+        debugLog("saveInputModesToDir error: " + e);
+    }
+}
+
+function saveInputModesToSetState() {
+    saveInputModesToDir(activeSlotStateDir);
+}
+
+function loadInputModesFromDir(dir) {
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        inputModeSelectedModule[i] = "native";
+        inputModeTrackParams[i] = { layout: "native" };
+        setInputTrackMode(i, INPUT_MODE_NATIVE);
+        setInputLedMode(i, INPUT_LED_PASS_THROUGH);
+    }
+    if (!dir) return;
+    try {
+        const raw = host_read_file(inputModesPathForDir(dir));
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        const root = data && data.input_modes ? data.input_modes : data;
+        const tracks = root && root.tracks ? root.tracks : {};
+        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+            const entry = tracks[String(i + 1)] || tracks[String(i)] || null;
+            if (!entry) continue;
+            inputModeSelectedModule[i] = entry.module || (entry.mode && entry.mode !== "native" ? "test" : "native");
+            inputModeTrackParams[i] = Object.assign({ layout: entry.mode || "native" }, entry.params || {});
+            applyInputModeTrackConfig(i);
+            setInputLedMode(i, inputLedOptionFromValue(entry.led_mode));
+        }
+    } catch (e) {
+        debugLog("loadInputModesFromDir error: " + e);
+    }
+}
+
+function enterInputModeMenu() {
+    refreshInputModeModules();
+    const track = getInputModeTrack();
+    enterInputModeTrackView(track);
+}
+
+function enterInputModeTrackView(track) {
+    selectedSlot = Math.max(0, Math.min(SHADOW_UI_SLOTS - 1, track));
+    inputModeSelectedRow = 0;
+    if (typeof shadow_set_focused_slot === "function") {
+        shadow_set_focused_slot(selectedSlot);
+    }
+    if (inputModeSelectedModule[selectedSlot] === "native") {
+        enterInputModeSelector();
+    } else {
+        setView(VIEWS.INPUT_MODE);
+        announce("Input Mode, Track " + (selectedSlot + 1) + ", " + selectedInputModeName(selectedSlot));
+    }
+}
+
+function enterInputModeSelector() {
+    refreshInputModeModules();
+    const track = getInputModeTrack();
+    const current = inputModeSelectedModule[track] || "native";
+    const idx = inputModeModules.findIndex(m => m.id === current);
+    inputModeSelectorIndex = idx >= 0 ? idx : 0;
+    setView(VIEWS.INPUT_MODE_SELECT);
+    needsRedraw = true;
+    announce("Input Mode, " + (inputModeModules[inputModeSelectorIndex]?.name || "Native"));
+}
+
+function drawInputModeSelector() {
+    clear_screen();
+    const track = getInputModeTrack();
+    drawHeader("Input Mode T" + (track + 1));
+    drawMenuList({
+        items: inputModeModules,
+        selectedIndex: inputModeSelectorIndex,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        getLabel: (item) => item.name || item.id,
+        getValue: (item) => item.id === inputModeSelectedModule[track] ? "*" : ""
+    });
+    drawFooter({left: "Back: done", right: "Click: select"});
+}
+
+function drawInputModeMenu() {
+    clear_screen();
+    const track = getInputModeTrack();
+    const module = getInputModeModuleById(inputModeSelectedModule[track]);
+    const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
+    drawHeader((module.name || "Input") + " T" + (track + 1));
+    drawMenuList({
+        items,
+        selectedIndex: inputModeSelectedRow,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        getLabel: (item) => item.label || item.name || item.key,
+        getValue: (item) => item.key === SWAP_MODULE_ACTION ? "" : formatInputModeParamValue(track, item)
+    });
+    drawFooter({left: "Back: done", right: "Click: edit"});
+}
+
+function handleInputModeJog(delta) {
+    const track = getInputModeTrack();
+    const module = getInputModeModuleById(inputModeSelectedModule[track]);
+    const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
+    inputModeSelectedRow = Math.max(0, Math.min(items.length - 1, inputModeSelectedRow + delta));
+    const item = items[inputModeSelectedRow];
+    announceMenuItem(item.label || item.name || item.key, item.key === SWAP_MODULE_ACTION ? "" : formatInputModeParamValue(track, item));
+    needsRedraw = true;
+}
+
+function handleInputModeSelect() {
+    const track = getInputModeTrack();
+    const module = getInputModeModuleById(inputModeSelectedModule[track]);
+    const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
+    const item = items[inputModeSelectedRow];
+    if (!item) return;
+    if (item.key === SWAP_MODULE_ACTION) {
+        enterInputModeSelector();
+        return;
+    }
+    if (item.type === "enum") {
+        const params = inputModeTrackParams[track] || {};
+        const values = Array.isArray(item.values) && item.values.length > 0 ? item.values : item.options;
+        if (Array.isArray(values) && values.length > 0) {
+            const current = getInputModeParamValue(track, item);
+            let idx = values.indexOf(current);
+            if (idx < 0) idx = 0;
+            params[item.key] = values[(idx + 1) % values.length];
+            inputModeTrackParams[track] = params;
+            applyInputModeTrackConfig(track);
+        }
+    }
+    saveInputModesToSetState();
+    needsRedraw = true;
+    announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+}
+
+function handleInputModeSelectorJog(delta) {
+    inputModeSelectorIndex = Math.max(0, Math.min(inputModeModules.length - 1, inputModeSelectorIndex + delta));
+    const item = inputModeModules[inputModeSelectorIndex];
+    announceMenuItem("Module", item.name || item.id);
+    needsRedraw = true;
+}
+
+function handleInputModeSelectorSelect() {
+    const track = getInputModeTrack();
+    const module = inputModeModules[inputModeSelectorIndex] || INPUT_MODE_NATIVE_MODULE;
+    inputModeSelectedModule[track] = module.id;
+    if (module.id === "native") {
+        inputModeTrackParams[track] = { layout: "native" };
+    } else {
+        const params = {};
+        for (const param of getInputModeParams(module)) {
+            if (param.default !== undefined) params[param.key] = param.default;
+        }
+        inputModeTrackParams[track] = params;
+    }
+    applyInputModeTrackConfig(track);
+    saveInputModesToSetState();
+    inputModeSelectedRow = 0;
+    if (module.id === "native") {
+        enterInputModeSelector();
+    } else {
+        setView(VIEWS.INPUT_MODE);
+        announce("Input Mode, " + (module.name || module.id));
+    }
+}
+
+function handleInputModeBack() {
+    setView(VIEWS.SLOTS);
+    announce("Slots Menu");
 }
 let redrawCounter = 0;
 const REDRAW_INTERVAL = 2; // ~30fps at 16ms tick
@@ -11126,6 +11494,12 @@ function handleJog(delta) {
             }
             break;
         }
+        case VIEWS.INPUT_MODE_SELECT:
+            handleInputModeSelectorJog(delta);
+            break;
+        case VIEWS.INPUT_MODE:
+            handleInputModeJog(delta);
+            break;
         case VIEWS.LFO_EDIT: {
             const items = getLfoItems();
             if (editingLfoValue) {
@@ -12055,6 +12429,12 @@ function handleSelect() {
             }
             break;
         }
+        case VIEWS.INPUT_MODE_SELECT:
+            handleInputModeSelectorSelect();
+            break;
+        case VIEWS.INPUT_MODE:
+            handleInputModeSelect();
+            break;
         case VIEWS.LFO_EDIT: {
             const items = getLfoItems();
             const item = items[selectedLfoItem];
@@ -12553,6 +12933,10 @@ function handleBack() {
             }
             break;
         }
+        case VIEWS.INPUT_MODE_SELECT:
+        case VIEWS.INPUT_MODE:
+            handleInputModeBack();
+            break;
         case VIEWS.LFO_EDIT:
             if (editingLfoValue) {
                 editingLfoValue = false;
@@ -13984,6 +14368,8 @@ globalThis.init = function() {
     }
     /* Re-apply Master FX sync after activeSlotStateDir resolves to the active set. */
     loadMasterFxChainFromConfig();
+    refreshInputModeModules();
+    loadInputModesFromDir(activeSlotStateDir);
 
     /* Sync dirty cache and slot names from autosave files (shim loaded them on startup) */
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
@@ -14077,6 +14463,7 @@ globalThis.shadow_save_state_now = function() {
      * shadow_chain_config.json drifts from slot_N.json across reboots,
      * e.g. toggling MPE (recv=All) before shutdown would revert on boot. */
     saveChainConfigToDir(activeSlotStateDir);
+    saveInputModesToSetState();
     debugLog("shadow_save_state_now: flushed set state before exit");
     return true;
 };
@@ -14216,6 +14603,17 @@ globalThis.tick = function() {
         return;
     }
 
+    if (typeof shadow_get_ui_flags2 === "function") {
+        const flags2 = shadow_get_ui_flags2();
+        if (flags2 & SHADOW_UI_FLAG2_JUMP_TO_INPUT_MODE) {
+            debugLog("INPUT_MODE flag detected, entering Input Mode menu");
+            enterInputModeMenu();
+            if (typeof shadow_clear_ui_flags2 === "function") {
+                shadow_clear_ui_flags2(SHADOW_UI_FLAG2_JUMP_TO_INPUT_MODE);
+            }
+        }
+    }
+
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
         const flags = shadow_get_ui_flags();
@@ -14333,6 +14731,7 @@ globalThis.tick = function() {
             autosaveAllSlots();
             saveMasterFxChainConfig();
             saveChainConfigToDir(activeSlotStateDir);
+            saveInputModesToSetState();
             if (typeof shadow_clear_ui_flags === "function") {
                 shadow_clear_ui_flags(SHADOW_UI_FLAG_SAVE_STATE);
             }
@@ -14345,6 +14744,7 @@ globalThis.tick = function() {
             saveMasterFxChainConfig();
             /* Save chain config (volumes, channels, mute/solo) to outgoing set dir */
             saveChainConfigToDir(activeSlotStateDir);
+            saveInputModesToSetState();
             /* Save current RNBO graph (if RNBO is running) */
             saveRnboGraphToDir(activeSlotStateDir);
 
@@ -14398,6 +14798,8 @@ globalThis.tick = function() {
                     /* Also copy chain config */
                     const chainCfg = host_read_file(copySourceDir + "/shadow_chain_config.json");
                     if (chainCfg) host_write_file(newDir + "/shadow_chain_config.json", chainCfg);
+                    const inputModes = host_read_file(copySourceDir + "/" + INPUT_MODE_STATE_FILE);
+                    if (inputModes) host_write_file(newDir + "/" + INPUT_MODE_STATE_FILE, inputModes);
                 } else {
                     /* New set — start with empty slots */
                     debugLog("SET_CHANGED: new set, starting with empty slots");
@@ -14413,6 +14815,7 @@ globalThis.tick = function() {
             activeSlotStateDir = newDir;
             debugLog("SET_CHANGED: " + oldDir + " -> " + newDir);
             loadChainConfigFromDir(newDir);
+            loadInputModesFromDir(newDir);
 
             /* 6. Two-pass reload: clear ALL old slots first (freeing memory),
              *    then load new slots. This reduces peak memory when switching
@@ -14621,6 +15024,7 @@ globalThis.tick = function() {
             autosaveCounter = 0;
             autosaveAllSlots();
             saveMasterFxChainConfig();
+            saveInputModesToSetState();
         }
     }
     /* Refresh dirty cache frequently for responsive UI */
@@ -14901,6 +15305,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.TOOL_STEM_REVIEW:
             drawToolStemReview();
+            break;
+        case VIEWS.INPUT_MODE_SELECT:
+            drawInputModeSelector();
+            break;
+        case VIEWS.INPUT_MODE:
+            drawInputModeMenu();
             break;
         case VIEWS.LFO_EDIT:
             drawLfoEdit();
@@ -15293,9 +15703,13 @@ globalThis.onMidiMessageInternal = function(data) {
             if (slotIndex >= 0 && slotIndex < SHADOW_UI_SLOTS) {
                 selectedSlot = slotIndex;
                 updateFocusedSlot(slotIndex);
-                const slotName = slots[slotIndex]?.name || `Slot ${slotIndex + 1}`;
-                announce(`Track ${slotIndex + 1}, ${slotName}`);
-                needsRedraw = true;
+                if (view === VIEWS.INPUT_MODE || view === VIEWS.INPUT_MODE_SELECT) {
+                    enterInputModeTrackView(slotIndex);
+                } else {
+                    const slotName = slots[slotIndex]?.name || `Slot ${slotIndex + 1}`;
+                    announce(`Track ${slotIndex + 1}, ${slotName}`);
+                    needsRedraw = true;
+                }
             }
             return;
         }

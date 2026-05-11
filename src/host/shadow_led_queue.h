@@ -63,6 +63,8 @@ void shadow_flush_pending_input_leds(void);
 /* Read the cached LED color for a note (from Move's MIDI_OUT).
  * Returns -1 if unknown, else the velocity/color value. */
 int led_queue_get_note_led_color(int note);
+uint32_t led_queue_get_pad_led_generation(void);
+void led_queue_clear_pad_led_cache(void);
 
 /* JACK LED cache — track LED state from JACK MIDI output (note/CC) */
 void led_queue_cache_jack_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2);

@@ -89,6 +89,9 @@ int shadow_load_config_from_dir(const char *dir);
 /* Handle a set being loaded (from Settings.json poll) */
 void shadow_handle_set_loaded(const char *set_name, const char *uuid);
 
+/* Refresh rootNote/scale/melodicLayout from the active set file into shared memory. */
+void shadow_refresh_set_musical_context(const char *set_name, const char *uuid);
+
 /* Poll Settings.json for set changes */
 void shadow_poll_current_set(void);
 
