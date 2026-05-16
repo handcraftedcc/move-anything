@@ -300,6 +300,14 @@ const INPUT_LED_OPTIONS = [
     { value: INPUT_LED_MODULE, key: "module", label: "Module" }
 ];
 
+let inputModeEditingValue = false;
+let inputModeKnobStates = {};
+
+function inputModeKnobState(key) {
+    if (!inputModeKnobStates[key]) inputModeKnobStates[key] = knobInit(0);
+    return inputModeKnobStates[key];
+}
+
 /* Chain component types for horizontal editor */
 const CHAIN_COMPONENTS = [
     { key: "midiFx", label: "MIDI FX", position: 0 },
@@ -561,27 +569,66 @@ function getInputModeModuleById(id) {
 
 function getInputModeParams(module) {
     if (!module) return [];
-    if (Array.isArray(module.chain_params)) return module.chain_params;
+    if (Array.isArray(module.params) && module.params.length > 0) return module.params;
+    if (Array.isArray(module.chain_params) && module.chain_params.length > 0) return module.chain_params;
     if (module.input_mode && Array.isArray(module.input_mode.params)) return module.input_mode.params;
     return [];
 }
 
 function getInputModeParamValue(track, param) {
     const params = inputModeTrackParams[track] || {};
-    if (params[param.key] !== undefined) return params[param.key];
-    if (param.default !== undefined) return param.default;
-    if (Array.isArray(param.values) && param.values.length > 0) return param.values[0];
-    if (Array.isArray(param.options) && param.options.length > 0) return param.options[0];
+    if (params[param.key] !== undefined && params[param.key] !== null) return params[param.key];
+    /* Fallback to SHM values (set by C engine or previous session) */
+    const idx = indexForInputModeParam(track, param);
+    if (idx >= 0 && typeof shadow_get_input_param === "function") {
+        const shmVal = shadow_get_input_param(track, idx);
+        if (shmVal !== 0 || param.default === 0) {
+            params[param.key] = shmVal;
+            return shmVal;
+        }
+    }
+    if (param.default !== undefined && param.default !== null) return param.default;
+    if (param.type === "int" || param.type === "note") return 0;
+    if (param.type === "enum") {
+        if (Array.isArray(param.values) && param.values.length > 0) return param.values[0];
+        if (Array.isArray(param.options) && param.options.length > 0) return param.options[0];
+        return 0;
+    }
     return "";
+}
+
+function indexForInputModeParam(track, param) {
+    const module = getInputModeModuleById(inputModeSelectedModule[track] || "native");
+    const allParams = getInputModeParams(module);
+    for (let i = 0; i < allParams.length; i++) {
+        if ((allParams[i].key || allParams[i].id) === (param.key || param.id)) return i;
+    }
+    return -1;
 }
 
 function formatInputModeParamValue(track, param) {
     const value = getInputModeParamValue(track, param);
-    if (param.type === "enum" && Array.isArray(param.values) && Array.isArray(param.options)) {
-        const idx = param.values.indexOf(value);
-        if (idx >= 0 && idx < param.options.length) return param.options[idx];
+    if (param.type === "enum") {
+        const vals = Array.isArray(param.values) ? param.values : (Array.isArray(param.options) ? param.options : []);
+        const labels = Array.isArray(param.options) ? param.options : vals;
+        let idx = vals.indexOf(value);
+        if (idx < 0 && typeof value === "string") {
+            idx = vals.findIndex(v => String(v).toLowerCase() === String(value).toLowerCase());
+        }
+        if (idx >= 0 && idx < labels.length) return String(labels[idx]);
+        return String(value);
+    }
+    if (param.type === "note") {
+        return midiNoteName(value);
     }
     return String(value);
+}
+
+function midiNoteName(note) {
+    if (typeof note !== "number" || note < 0 || note > 127) return String(note);
+    const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    const oct = Math.floor(note / 12) - 2;
+    return names[note % 12] + oct;
 }
 
 function selectedInputModeName(track) {
@@ -593,7 +640,28 @@ function applyInputModeTrackConfig(track) {
     const params = inputModeTrackParams[track] || {};
     const module = getInputModeModuleById(moduleId);
     setInputTrackMode(track, moduleToInputModeValue(module, params));
+
+    /* Sync params to SHM for the C engine */
+    if (typeof shadow_set_input_param === "function") {
+        const allParams = getInputModeParams(module);
+        for (let i = 0; i < allParams.length && i < INPUT_PARAM_COUNT; i++) {
+            const param = allParams[i];
+            const key = param.key || param.id;
+            let val = params[key];
+            if (val === undefined || val === null) val = param.default;
+            if (val === undefined || val === null) val = 0;
+            if (param.type === "enum" && Array.isArray(param.values)) {
+                const idx = param.values.indexOf(val);
+                val = idx >= 0 ? idx : (typeof val === "number" ? val : 0);
+            }
+            if (typeof val !== "number") val = parseInt(String(val), 10);
+            if (isNaN(val)) val = 0;
+            shadow_set_input_param(track, i, val);
+        }
+    }
 }
+
+const INPUT_PARAM_COUNT = 8;
 
 function refreshInputModeModules() {
     const discovered = [INPUT_MODE_NATIVE_MODULE];
@@ -665,9 +733,18 @@ function saveInputModesToDir(dir) {
     if (!dir) return;
     const tracks = {};
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const modId = inputModeSelectedModule[i] || "native";
+        const module = getInputModeModuleById(modId);
+        const savedParams = {};
+        const allParams = getInputModeParams(module);
+        for (const param of allParams) {
+            const key = param.key || param.id;
+            savedParams[key] = getInputModeParamValue(i, param);
+        }
         tracks[String(i + 1)] = {
-            module: inputModeSelectedModule[i] || "native",
+            module: modId,
             params: inputModeTrackParams[i] || {},
+            saved_params: savedParams,
             mode: inputModeValueToLayout(getInputTrackMode(i)),
             led_mode: inputLedKey(getInputLedMode(i))
         };
@@ -690,6 +767,10 @@ function loadInputModesFromDir(dir) {
         inputModeTrackParams[i] = { layout: "native" };
         setInputTrackMode(i, INPUT_MODE_NATIVE);
         setInputLedMode(i, INPUT_LED_PASS_THROUGH);
+        /* Clear SHM params */
+        if (typeof shadow_set_input_param === "function") {
+            for (let p = 0; p < INPUT_PARAM_COUNT; p++) shadow_set_input_param(i, p, 0);
+        }
     }
     if (!dir) return;
     try {
@@ -701,8 +782,18 @@ function loadInputModesFromDir(dir) {
         for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
             const entry = tracks[String(i + 1)] || tracks[String(i)] || null;
             if (!entry) continue;
-            inputModeSelectedModule[i] = entry.module || (entry.mode && entry.mode !== "native" ? "test" : "native");
-            inputModeTrackParams[i] = Object.assign({ layout: entry.mode || "native" }, entry.params || {});
+            const modId = entry.module || (entry.mode && entry.mode !== "native" ? "test" : "native");
+            inputModeSelectedModule[i] = modId;
+            const params = Object.assign({ layout: entry.mode || "native" }, entry.params || {}, entry.saved_params || {});
+            /* Restore numeric params from legacy saved_params */
+            if (entry.saved_params) {
+                for (const [k, v] of Object.entries(entry.saved_params)) {
+                    if (params[k] === undefined || params[k] === null || params[k] === "native") {
+                        params[k] = v;
+                    }
+                }
+            }
+            inputModeTrackParams[i] = params;
             applyInputModeTrackConfig(i);
             setInputLedMode(i, inputLedOptionFromValue(entry.led_mode));
         }
@@ -720,6 +811,8 @@ function enterInputModeMenu() {
 function enterInputModeTrackView(track) {
     selectedSlot = Math.max(0, Math.min(SHADOW_UI_SLOTS - 1, track));
     inputModeSelectedRow = 0;
+    inputModeEditingValue = false;
+    inputModeKnobStates = {};
     if (typeof shadow_set_focused_slot === "function") {
         shadow_set_focused_slot(selectedSlot);
     }
@@ -766,16 +859,38 @@ function drawInputModeMenu() {
         items,
         selectedIndex: inputModeSelectedRow,
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
-        getLabel: (item) => item.label || item.name || item.key,
+        getLabel: (item) => (inputModeEditingValue && items.indexOf(item) === inputModeSelectedRow ? "> " : "  ") + (item.label || item.name || item.key),
         getValue: (item) => item.key === SWAP_MODULE_ACTION ? "" : formatInputModeParamValue(track, item)
     });
-    drawFooter({left: "Back: done", right: "Click: edit"});
+    if (inputModeEditingValue) {
+        drawFooter({left: "Back: done", right: "Click: done, Jog: adj"});
+    } else {
+        drawFooter({left: "Back: done", right: "Click: edit"});
+    }
 }
 
 function handleInputModeJog(delta) {
     const track = getInputModeTrack();
     const module = getInputModeModuleById(inputModeSelectedModule[track]);
     const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
+
+    if (inputModeEditingValue) {
+        const item = items[inputModeSelectedRow];
+        if (item && item.key !== SWAP_MODULE_ACTION) {
+            const config = knobConfigFromMeta(item);
+            const kn = inputModeKnobState(item.key);
+            const newVal = knobTick(kn, config, delta, Date.now());
+            const params = inputModeTrackParams[track] || {};
+            params[item.key] = newVal;
+            inputModeTrackParams[track] = params;
+            applyInputModeTrackConfig(track);
+            saveInputModesToSetState();
+            needsRedraw = true;
+            announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+            return;
+        }
+    }
+
     inputModeSelectedRow = Math.max(0, Math.min(items.length - 1, inputModeSelectedRow + delta));
     const item = items[inputModeSelectedRow];
     announceMenuItem(item.label || item.name || item.key, item.key === SWAP_MODULE_ACTION ? "" : formatInputModeParamValue(track, item));
@@ -788,25 +903,36 @@ function handleInputModeSelect() {
     const items = getInputModeParams(module).concat([{ key: SWAP_MODULE_ACTION, label: "Swap Module", type: "action" }]);
     const item = items[inputModeSelectedRow];
     if (!item) return;
+
     if (item.key === SWAP_MODULE_ACTION) {
+        inputModeEditingValue = false;
         enterInputModeSelector();
         return;
     }
-    if (item.type === "enum") {
-        const params = inputModeTrackParams[track] || {};
-        const values = Array.isArray(item.values) && item.values.length > 0 ? item.values : item.options;
-        if (Array.isArray(values) && values.length > 0) {
-            const current = getInputModeParamValue(track, item);
-            let idx = values.indexOf(current);
-            if (idx < 0) idx = 0;
-            params[item.key] = values[(idx + 1) % values.length];
-            inputModeTrackParams[track] = params;
-            applyInputModeTrackConfig(track);
-        }
+
+    /* Toggle editing mode for numeric/note/enum params */
+    inputModeEditingValue = !inputModeEditingValue;
+    if (inputModeEditingValue) {
+        const val = getInputModeParamValue(track, item);
+        inputModeKnobState(item.key).value = typeof val === "number" ? val : 0;
+        announce("Edit " + (item.label || item.name || item.key) + ", " + formatInputModeParamValue(track, item));
+    } else {
+        announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
     }
-    saveInputModesToSetState();
     needsRedraw = true;
-    announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+}
+
+    /* Toggle editing mode for numeric/note/enum params */
+    inputModeEditingValue = !inputModeEditingValue;
+    if (inputModeEditingValue) {
+        /* Initialize knob state with current value */
+        const val = getInputModeParamValue(track, item);
+        inputModeKnobState(item.key).value = typeof val === "number" ? val : 0;
+        announce("Edit " + (item.label || item.name || item.key) + ", " + formatInputModeParamValue(track, item));
+    } else {
+        announceMenuItem(item.label || item.name || item.key, formatInputModeParamValue(track, item));
+    }
+    needsRedraw = true;
 }
 
 function handleInputModeSelectorJog(delta) {
@@ -841,6 +967,12 @@ function handleInputModeSelectorSelect() {
 }
 
 function handleInputModeBack() {
+    if (inputModeEditingValue) {
+        inputModeEditingValue = false;
+        needsRedraw = true;
+        return;
+    }
+    inputModeEditingValue = false;
     setView(VIEWS.SLOTS);
     announce("Slots Menu");
 }

@@ -2,6 +2,82 @@
 
 #include <string.h>
 
+/* ========================================================================
+ * Scale definitions
+ * ======================================================================== */
+
+typedef struct {
+    const char *name;
+    uint8_t intervals[12];
+    uint8_t count;
+} scale_def_t;
+
+static const scale_def_t scales[] = {
+    {"Chromatic",         {0,1,2,3,4,5,6,7,8,9,10,11}, 12},
+    {"Major",             {0,2,4,5,7,9,11},             7},
+    {"Minor",             {0,2,3,5,7,8,10},             7},
+    {"Dorian",            {0,2,3,5,7,9,10},             7},
+    {"Phrygian",          {0,1,3,5,7,8,10},             7},
+    {"Lydian",            {0,2,4,6,7,9,11},             7},
+    {"Mixolydian",        {0,2,4,5,7,9,10},             7},
+    {"Locrian",           {0,1,3,5,6,8,10},             7},
+    {"Harmonic Minor",    {0,2,3,5,7,8,11},             7},
+    {"Melodic Minor",     {0,2,3,5,7,9,11},             7},
+    {"Major Pentatonic",  {0,2,4,7,9},                  5},
+    {"Minor Pentatonic",  {0,3,5,7,10},                 5},
+    {"Blues",             {0,3,5,6,7,10},               6},
+};
+
+#define SCALE_COUNT ((int)(sizeof(scales) / sizeof(scales[0])))
+
+int schwung_input_mode_scale_count(void) { return SCALE_COUNT; }
+
+const char *schwung_input_mode_scale_name(int index) {
+    if (index < 0 || index >= SCALE_COUNT) return "Chromatic";
+    return scales[index].name;
+}
+
+static const scale_def_t *get_scale(int index) {
+    if (index < 0 || index >= SCALE_COUNT) return &scales[0];
+    return &scales[index];
+}
+
+int schwung_input_mode_note_in_scale(int note, int root, int scale_index) {
+    const scale_def_t *scale = get_scale(scale_index);
+    int semitone = ((note - root) % 12 + 12) % 12;
+    for (int i = 0; i < (int)scale->count; i++) {
+        if (scale->intervals[i] == semitone) return 1;
+    }
+    return 0;
+}
+
+/* Returns the scale degree (0-based) for a note within the scale,
+ * or -1 if the note is not in the scale. */
+static int note_scale_degree(int note, int root, int scale_index) {
+    const scale_def_t *scale = get_scale(scale_index);
+    int semitone = ((note - root) % 12 + 12) % 12;
+    for (int i = 0; i < (int)scale->count; i++) {
+        if (scale->intervals[i] == semitone) return i;
+    }
+    return -1;
+}
+
+/* Returns the MIDI note for a given scale degree at a given octave.
+ * degree: 0 = tonic, 1 = supertonic, etc.
+ * octave: 0 = same octave as root, 1 = one octave up */
+static int scale_note_for_degree(int root, int scale_index, int degree, int octave_offset) {
+    const scale_def_t *scale = get_scale(scale_index);
+    int oct = degree / scale->count;
+    int deg = degree % scale->count;
+    /* Handle negative degrees */
+    if (deg < 0) { deg += scale->count; oct--; }
+    return root + scale->intervals[deg] + (oct + octave_offset) * 12;
+}
+
+/* ========================================================================
+ * Internal helpers
+ * ======================================================================== */
+
 static int valid_track(int track) {
     return track >= 0 && track < SCHWUNG_INPUT_MODE_TRACKS;
 }
@@ -16,10 +92,32 @@ static uint8_t track_channel(int track) {
 }
 
 static int valid_mode(schwung_input_mode_t mode) {
-    return mode == SCHWUNG_INPUT_MODE_NATIVE ||
-           mode == SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC ||
-           mode == SCHWUNG_INPUT_MODE_DRUM32 ||
-           mode == SCHWUNG_INPUT_MODE_CHORD_PADS;
+    return mode >= SCHWUNG_INPUT_MODE_NATIVE && mode <= SCHWUNG_INPUT_MODE_CHORD_PADS;
+}
+
+/* Extract params from the int16_t array passed from shim */
+static schwung_input_mode_params_t unpack_params(const int16_t *params, int8_t octave) {
+    schwung_input_mode_params_t p;
+    memset(&p, 0, sizeof(p));
+    if (params) {
+        p.root    = params[0];
+        p.scale   = params[1];
+        p.index_2 = params[2];
+        p.index_3 = params[3];
+    }
+    p.octave = octave;
+    if (p.scale < 0 || p.scale >= SCALE_COUNT) p.scale = 0;
+    if (p.index_2 <= 0) p.index_2 = 2;
+    if (p.index_3 <= 0) p.index_3 = 4;
+    if (p.index_2 > 7) p.index_2 = 7;
+    if (p.index_3 > 7) p.index_3 = 7;
+    return p;
+}
+
+static int clamp_root(int root) {
+    if (root < 36) return 36;
+    if (root > 84) return 84;
+    return root;
 }
 
 static int color_value_at(const int *pad_colors, int idx) {
@@ -55,8 +153,12 @@ static int add_unique_color(int *colors, int *count, int max_count, int color) {
     return 1;
 }
 
+/* ========================================================================
+ * LED grid classification (unchanged from original)
+ * ======================================================================== */
+
 schwung_input_led_grid_mode_t schwung_input_mode_detect_led_grid_mode(const int pad_colors[SCHWUNG_INPUT_MODE_PADS],
-                                                                      const uint8_t held_pads[SCHWUNG_INPUT_MODE_PADS]) {
+                                                                       const uint8_t held_pads[SCHWUNG_INPUT_MODE_PADS]) {
     if (!pad_colors) return SCHWUNG_INPUT_LED_GRID_UNKNOWN_NON_NOTE;
 
     int painted_count = 0;
@@ -153,37 +255,79 @@ schwung_input_view_class_t schwung_input_mode_classify_led_grid(const int pad_co
         : SCHWUNG_INPUT_VIEW_NON_PLAY;
 }
 
+/* ========================================================================
+ * Note building (param-aware)
+ * ======================================================================== */
+
 static int build_notes_for_pad(schwung_input_mode_t mode,
                                int pidx,
                                uint8_t *notes,
-                               int max_notes) {
+                               int max_notes,
+                               const schwung_input_mode_params_t *p) {
     if (!notes || max_notes <= 0 || pidx < 0 || pidx >= SCHWUNG_INPUT_MODE_PADS) return 0;
 
-    if (mode == SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC) {
-        notes[0] = (uint8_t)(48 + pidx);
+    if (mode == SCHWUNG_INPUT_MODE_DRUM32) {
+        int drum_root_offset = (int)p->root; /* param[0] = root_octave, defaults to 0 */
+        if (drum_root_offset < -2) drum_root_offset = -2;
+        if (drum_root_offset > 3) drum_root_offset = 3;
+        int perf_octave = (p->octave > 4) ? 4 : (p->octave < -4) ? -4 : p->octave;
+        int note = 36 + pidx + (drum_root_offset + perf_octave) * 12;
+        if (note < 0) note = 0;
+        if (note > 127) note = 127;
+        notes[0] = (uint8_t)note;
         return 1;
     }
 
-    if (mode == SCHWUNG_INPUT_MODE_DRUM32) {
-        notes[0] = (uint8_t)(36 + pidx);
+    if (mode == SCHWUNG_INPUT_MODE_TRUE_CHROMATIC) {
+        int root = clamp_root((int)p->root);
+        if (root <= 0) root = 48;
+        root += (int)p->octave * 12;
+        if (p->scale > 0) {
+            /* Scale-filtered chromatic: only emit in-scale notes.
+             * Each pad maps to the next in-scale note from the root. */
+            const scale_def_t *scale = get_scale((int)p->scale);
+            int oct = pidx / scale->count;
+            int deg = pidx % scale->count;
+            notes[0] = (uint8_t)(root + scale->intervals[deg] + oct * 12);
+        } else {
+            /* Pure chromatic: linear from root */
+            notes[0] = (uint8_t)(root + pidx);
+        }
+        if (notes[0] > 127) notes[0] = 127;
         return 1;
     }
 
     if (mode == SCHWUNG_INPUT_MODE_CHORD_PADS && max_notes >= 3) {
-        static const uint8_t roots[7] = {60, 62, 64, 65, 67, 69, 71};
-        static const uint8_t thirds[7] = {4, 3, 3, 4, 4, 3, 3};
-        static const uint8_t fifths[7] = {7, 7, 7, 7, 7, 7, 6};
-        int degree = pidx % 7;
-        int octave = pidx / 7;
-        uint8_t root = (uint8_t)(roots[degree] + octave * 12);
-        notes[0] = root;
-        notes[1] = (uint8_t)(root + thirds[degree]);
-        notes[2] = (uint8_t)(root + fifths[degree]);
+        int root = clamp_root((int)p->root);
+        if (root <= 0) root = 60;
+        root += (int)p->octave * 12;
+        int degree = pidx % SCALE_COUNT;
+        int oct = pidx / SCALE_COUNT;
+
+        int note1 = scale_note_for_degree(root, (int)p->scale, degree, oct);
+        int note2 = scale_note_for_degree(root, (int)p->scale, degree + (int)p->index_2 - 1, oct);
+        int note3 = scale_note_for_degree(root, (int)p->scale, degree + (int)p->index_3 - 1, oct);
+
+        /* Clamp to valid MIDI range */
+        if (note1 > 127) note1 = 127;
+        if (note2 > 127) note2 = 127;
+        if (note3 > 127) note3 = 127;
+        if (note1 < 0) note1 = 0;
+        if (note2 < 0) note2 = 0;
+        if (note3 < 0) note3 = 0;
+
+        notes[0] = (uint8_t)note1;
+        notes[1] = (uint8_t)note2;
+        notes[2] = (uint8_t)note3;
         return 3;
     }
 
     return 0;
 }
+
+/* ========================================================================
+ * Packet helpers
+ * ======================================================================== */
 
 static int append_packet(schwung_input_mode_result_t *result,
                          uint8_t cin,
@@ -214,6 +358,10 @@ static int append_note_off(schwung_input_mode_result_t *result,
     return append_packet(result, (uint8_t)((2 << 4) | 0x08),
                          (uint8_t)(0x80 | (channel & 0x0F)), note, 0);
 }
+
+/* ========================================================================
+ * Public API
+ * ======================================================================== */
 
 void schwung_input_mode_result_clear(schwung_input_mode_result_t *result) {
     if (!result) return;
@@ -272,6 +420,8 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
                                    uint8_t status,
                                    uint8_t data1,
                                    uint8_t data2,
+                                   const int16_t *params,
+                                   int8_t octave,
                                    schwung_input_mode_result_t *result) {
     if (result) schwung_input_mode_result_clear(result);
     if (!state || !valid_track(active_track)) return 0;
@@ -288,6 +438,8 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
     schwung_input_mode_held_pad_t *held = &state->held[active_track][pidx];
     int is_note_on = (type == 0x90 && data2 > 0);
 
+    schwung_input_mode_params_t p = unpack_params(params, octave);
+
     if (is_note_on) {
         if (held->active) {
             for (int i = 0; i < held->count && i < (int)sizeof(held->notes); i++) {
@@ -297,10 +449,12 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
         }
 
         uint8_t mapped_notes[8] = {0};
-        int note_count = build_notes_for_pad(state->tracks[active_track].mode,
-                                             pidx,
-                                             mapped_notes,
-                                             (int)sizeof(mapped_notes));
+        int mode = state->tracks[active_track].mode;
+        int note_count = build_notes_for_pad((schwung_input_mode_t)mode,
+                                              pidx,
+                                              mapped_notes,
+                                              (int)sizeof(mapped_notes),
+                                              &p);
         if (note_count <= 0) return 0;
 
         for (int i = 0; i < note_count; i++) {
@@ -320,4 +474,99 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
         memset(held, 0, sizeof(*held));
     }
     return 1;
+}
+
+/* ========================================================================
+ * Pad LED rendering
+ * ======================================================================== */
+
+/* Compute hue-shifted variant of a color for root note highlighting.
+ * Uses the same hue bucket math as color_hue() for consistency. */
+static uint8_t hue_shift_color(uint8_t color, int offset) {
+    if (color <= 2) return 0; /* off / black */
+    int bucket = (int)(((int)color + 2) / 4);
+    int new_bucket = bucket + offset;
+    if (new_bucket < 1) new_bucket = 1;
+    if (new_bucket > 30) new_bucket = 30;
+    /* Map back: bucket * 4 gives the approx center of that hue range */
+    int new_color = new_bucket * 4 - 2;
+    if (new_color < 3) new_color = 3;
+    if (new_color > 127) new_color = 127;
+    return (uint8_t)new_color;
+}
+
+/* Find the dominant (most common non-off) color in an array */
+static uint8_t dominant_color(const uint8_t *colors, int count) {
+    int hist[128] = {0};
+    int best = 0, best_count = 0;
+    for (int i = 0; i < count; i++) {
+        if (colors[i] <= 2) continue;
+        int c = colors[i];
+        hist[c]++;
+        if (hist[c] > best_count) {
+            best_count = hist[c];
+            best = c;
+        }
+    }
+    return (uint8_t)(best > 0 ? best : 0);
+}
+
+int schwung_input_mode_render_leds(schwung_input_mode_t mode,
+                                   const int16_t *params,
+                                   int8_t octave,
+                                   const uint8_t native_colors[SCHWUNG_INPUT_MODE_PADS],
+                                   uint8_t pad_colors_out[SCHWUNG_INPUT_MODE_PADS]) {
+    if (!pad_colors_out) return 0;
+    memset(pad_colors_out, 0, SCHWUNG_INPUT_MODE_PADS);
+
+    if (mode == SCHWUNG_INPUT_MODE_NATIVE) return 0;
+
+    schwung_input_mode_params_t p = unpack_params(params, octave);
+    uint8_t track_color = dominant_color(native_colors, SCHWUNG_INPUT_MODE_PADS);
+    if (track_color == 0) track_color = 85; /* fallback: warm amber */
+
+    int lit = 0;
+
+    if (mode == SCHWUNG_INPUT_MODE_DRUM32) {
+        /* All pads lit with track color */
+        for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+            pad_colors_out[i] = track_color;
+            lit++;
+        }
+    } else if (mode == SCHWUNG_INPUT_MODE_TRUE_CHROMATIC) {
+        int root = clamp_root((int)p.root);
+        if (root <= 0) root = 48;
+        root += p.octave * 12;
+        for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+            int note;
+            if (p.scale > 0) {
+                const scale_def_t *scale = get_scale((int)p.scale);
+                int oct = i / scale->count;
+                int deg = i % scale->count;
+                note = root + scale->intervals[deg] + oct * 12;
+            } else {
+                note = root + i;
+            }
+
+            if (!schwung_input_mode_note_in_scale(note, root, (int)p.scale)) {
+                pad_colors_out[i] = 0; /* off: non-scale */
+                continue;
+            }
+            int degree = note_scale_degree(note, root, (int)p.scale);
+            /* Root notes: hue-shifted variant; others: track color */
+            if (degree == 0) {
+                pad_colors_out[i] = hue_shift_color(track_color, -2);
+            } else {
+                pad_colors_out[i] = track_color;
+            }
+            lit++;
+        }
+    } else if (mode == SCHWUNG_INPUT_MODE_CHORD_PADS) {
+        for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+            pad_colors_out[i] = track_color;
+            lit++;
+        }
+    }
+
+    return lit;
 }

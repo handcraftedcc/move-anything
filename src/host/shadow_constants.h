@@ -34,6 +34,7 @@
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
 #define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
 #define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
+#define SHM_SHADOW_INPUT_PARAM "/schwung-input-param"  /* Input mode per-track params */
 
 /* ============================================================================
  * Audio Constants
@@ -259,6 +260,28 @@ typedef struct schwung_ext_midi_remap_t {
 
 #define EXT_MIDI_REMAP_PASSTHROUGH 0xFF
 #define EXT_MIDI_REMAP_VERSION     1
+
+/* ============================================================================
+ * Input Mode Param Constants
+ * ============================================================================ */
+
+#define INPUT_PARAM_COUNT      8    /* Max params per track */
+#define INPUT_PARAM_BUFFER_SIZE 72
+
+/*
+ * Input-mode per-track parameters shared between shim and shadow UI.
+ * The shim reads these on every SPI frame; the JS writes them via host bindings.
+ * Param indices are defined by each module's module.json params array order.
+ * Index 0 = root (MIDI note), 1 = scale (enum index), 2+ = module-specific.
+ * int16_t values cover MIDI notes, scale indices, and octave shifts (-4..+4).
+ */
+typedef struct schwung_input_param_t {
+    volatile int16_t values[SHADOW_UI_SLOTS][INPUT_PARAM_COUNT];
+    volatile int8_t  octave[SHADOW_UI_SLOTS];   /* performance octave shift (+/-), not persisted */
+    volatile uint8_t  _reserved[4];
+} schwung_input_param_t;
+
+typedef char input_param_size_check[(sizeof(schwung_input_param_t) == INPUT_PARAM_BUFFER_SIZE) ? 1 : -1];
 
 /*
  * Web UI param set ring — web server writes, shim drains each audio block.

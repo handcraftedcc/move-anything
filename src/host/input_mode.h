@@ -9,10 +9,13 @@
 
 typedef enum {
     SCHWUNG_INPUT_MODE_NATIVE = 0,
-    SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC = 1,
+    SCHWUNG_INPUT_MODE_TRUE_CHROMATIC = 1,
     SCHWUNG_INPUT_MODE_DRUM32 = 2,
     SCHWUNG_INPUT_MODE_CHORD_PADS = 3
 } schwung_input_mode_t;
+
+/* Alias old POC name */
+#define SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC SCHWUNG_INPUT_MODE_TRUE_CHROMATIC
 
 typedef enum {
     SCHWUNG_INPUT_LED_PASS_THROUGH = 0,
@@ -35,6 +38,23 @@ typedef struct {
     schwung_input_mode_track_config_t tracks[SCHWUNG_INPUT_MODE_TRACKS];
     schwung_input_mode_held_pad_t held[SCHWUNG_INPUT_MODE_TRACKS][SCHWUNG_INPUT_MODE_PADS];
 } schwung_input_mode_state_t;
+
+/* Per-track params passed from JS via SHM.
+ * Index mapping (defined by module.json params array order):
+ *   0 = root (MIDI note, e.g. 60 = C3)
+ *   1 = scale (enum index into scale table)
+ *   2 = index_2 (chord interval index, default 2 = 3rd)
+ *   3 = index_3 (chord interval index, default 4 = 5th)
+ *   4-7 = reserved
+ * octave is a performance shift applied on top of root (+/-). */
+typedef struct {
+    int16_t root;        /* 0 */
+    int16_t scale;       /* 1 */
+    int16_t index_2;     /* 2 */
+    int16_t index_3;     /* 3 */
+    int16_t _unused[4];  /* 4-7 */
+    int8_t  octave;
+} schwung_input_mode_params_t;
 
 typedef struct {
     uint16_t count;
@@ -73,6 +93,27 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
                                    uint8_t status,
                                    uint8_t data1,
                                    uint8_t data2,
+                                   const int16_t *params,
+                                   int8_t octave,
                                    schwung_input_mode_result_t *result);
+
+/* Render pad LED colors for the given input mode.
+ * Fills pad_colors_out[32] with color values (0 = off).
+ * native_colors is the current Move pad LED state for reference.
+ * Returns number of pads lit. */
+int schwung_input_mode_render_leds(schwung_input_mode_t mode,
+                                   const int16_t *params,
+                                   int8_t octave,
+                                   const uint8_t native_colors[SCHWUNG_INPUT_MODE_PADS],
+                                   uint8_t pad_colors_out[SCHWUNG_INPUT_MODE_PADS]);
+
+/* Get the number of scale definitions available */
+int schwung_input_mode_scale_count(void);
+
+/* Get scale name by index */
+const char *schwung_input_mode_scale_name(int index);
+
+/* Check if a MIDI note (0-127) belongs to a scale with given root */
+int schwung_input_mode_note_in_scale(int note, int root, int scale_index);
 
 #endif

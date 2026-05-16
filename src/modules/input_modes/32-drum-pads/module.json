@@ -1,0 +1,28 @@
+{
+  "id": "32-drum-pads",
+  "name": "32 Drum Pads",
+  "version": "0.1.0",
+  "api_version": 1,
+  "component_type": "input_mode",
+  "description": "Maps all 32 pads to drum notes (MIDI 36-67), one note per pad.",
+  "author": "Schwung",
+  "capabilities": {
+    "input_mode": true,
+    "pad_led_modes": ["pass_through", "module"]
+  },
+  "input_mode": {
+    "engine": "host_static",
+    "mode": "drum32"
+  },
+  "params": [
+    {
+      "key": "root_octave",
+      "name": "Root Octave",
+      "label": "Root Octave",
+      "type": "int",
+      "default": 0,
+      "min": -2,
+      "max": 3
+    }
+  ]
+}

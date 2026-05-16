@@ -43,6 +43,7 @@ static shadow_midi_inject_t *shadow_midi_inject = NULL;
 static schwung_ext_midi_remap_t *ext_midi_remap = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
+static schwung_input_param_t *shadow_input_param = NULL;
 
 static int global_exit_flag = 0;
 static uint8_t last_midi_ready = 0;
@@ -140,6 +141,17 @@ static int open_shadow_shm(void) {
             shadow_overlay = NULL;
         } else {
             unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow overlay shm mapped: %p", shadow_overlay);
+        }
+    }
+
+    fd = shm_open(SHM_SHADOW_INPUT_PARAM, O_RDWR, 0666);
+    if (fd >= 0) {
+        shadow_input_param = (schwung_input_param_t *)mmap(NULL, INPUT_PARAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (shadow_input_param == MAP_FAILED) {
+            shadow_input_param = NULL;
+        } else {
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG, "Shadow input param shm mapped: %p", shadow_input_param);
         }
     }
 
@@ -393,6 +405,42 @@ static JSValue js_shadow_set_input_led_mode(JSContext *ctx, JSValueConst this_va
     if (mode != 1) mode = 0;
     shadow_control->input_led_modes[track] = (uint8_t)mode;
     return JS_UNDEFINED;
+}
+
+/* shadow_get_input_param(track, param_index) -> int
+ * Reads an input mode parameter value from shared memory. */
+static JSValue js_shadow_get_input_param(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_input_param || argc < 2) return JS_NewInt32(ctx, 0);
+    int track = 0, idx = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_NewInt32(ctx, 0);
+    if (JS_ToInt32(ctx, &idx, argv[1])) return JS_NewInt32(ctx, 0);
+    if (idx < 0 || idx >= INPUT_PARAM_COUNT) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_input_param->values[track][idx]);
+}
+
+/* shadow_set_input_param(track, param_index, value) -> void
+ * Writes an input mode parameter value to shared memory. */
+static JSValue js_shadow_set_input_param(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_input_param || argc < 3) return JS_UNDEFINED;
+    int track = 0, idx = 0, val = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &idx, argv[1])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &val, argv[2])) return JS_UNDEFINED;
+    if (idx < 0 || idx >= INPUT_PARAM_COUNT) return JS_UNDEFINED;
+    shadow_input_param->values[track][idx] = (int16_t)val;
+    return JS_UNDEFINED;
+}
+
+/* shadow_get_input_octave(track) -> int
+ * Reads the performance octave shift from shared memory. */
+static JSValue js_shadow_get_input_octave(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_input_param || argc < 1) return JS_NewInt32(ctx, 0);
+    int track = 0;
+    if (!js_track_arg(ctx, argv, &track)) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_input_param->octave[track]);
 }
 
 /* shadow_get_selected_slot() -> int
@@ -3177,6 +3225,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_track_mode", JS_NewCFunction(ctx, js_shadow_set_input_track_mode, "shadow_set_input_track_mode", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_led_mode", JS_NewCFunction(ctx, js_shadow_get_input_led_mode, "shadow_get_input_led_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_led_mode", JS_NewCFunction(ctx, js_shadow_set_input_led_mode, "shadow_set_input_led_mode", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_param", JS_NewCFunction(ctx, js_shadow_get_input_param, "shadow_get_input_param", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_set_input_param", JS_NewCFunction(ctx, js_shadow_set_input_param, "shadow_set_input_param", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_input_octave", JS_NewCFunction(ctx, js_shadow_get_input_octave, "shadow_get_input_octave", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_open_tool_cmd",
         JS_NewCFunction(ctx, js_shadow_get_open_tool_cmd, "shadow_get_open_tool_cmd", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_selected_slot", JS_NewCFunction(ctx, js_shadow_get_selected_slot, "shadow_get_selected_slot", 0));

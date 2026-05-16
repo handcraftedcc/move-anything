@@ -134,6 +134,7 @@ static web_param_set_ring_t *web_param_set_shm = NULL;       /* Web UI → shim 
 static web_param_notify_ring_t *web_param_notify_shm = NULL;  /* Shim → web UI param change ring */
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
+static schwung_input_param_t *shadow_input_param_shm = NULL; /* Input mode per-track params */
 
 /* Recording dot: use wall clock for consistent flash rate regardless of call frequency */
 static inline int rec_dot_visible(void) {
@@ -626,6 +627,8 @@ static uint8_t shadow_input_mode_pad_held[SCHWUNG_INPUT_MODE_PADS];
 static int shadow_input_mode_led_allows_override = 0;
 static schwung_input_led_grid_mode_t shadow_input_mode_led_grid_mode =
     SCHWUNG_INPUT_LED_GRID_UNKNOWN_NON_NOTE;
+static uint8_t native_pad_led_baseline[SCHWUNG_INPUT_MODE_PADS];
+static uint8_t custom_input_led_colors[SCHWUNG_INPUT_MODE_PADS];
 
 #define SHADOW_INPUT_MODE_LED_SETTLE_FRAMES 4
 #define SHADOW_INPUT_MODE_LED_TIMEOUT_FRAMES 96
@@ -753,7 +756,16 @@ static int shadow_input_mode_update_led_gate(void)
 
     for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
         int color = led_queue_get_note_led_color(68 + i);
-        colors[i] = color >= 0 ? color : 0;
+        if (color >= 0 && custom_input_led_colors[i] > 0 &&
+            (uint8_t)color == custom_input_led_colors[i]) {
+            /* This pad still shows our custom write — use native baseline.
+             * Move hasn't repainted it yet since our last LED output. */
+            color = native_pad_led_baseline[i] > 0 ? native_pad_led_baseline[i] : 0;
+        } else if (color >= 0) {
+            /* Move has repainted — refresh our native baseline. */
+            native_pad_led_baseline[i] = (uint8_t)color;
+        }
+        colors[i] = color > 0 ? color : 0;
     }
 
     schwung_input_led_grid_mode_t grid_mode =
@@ -2707,6 +2719,7 @@ static int shm_ext_midi_remap_fd = -1;
 static int shm_screenreader_fd = -1;
 static int shm_pub_audio_fd = -1;
 static int shm_overlay_fd = -1;
+static int shm_input_param_fd = -1;
 
 /* Shadow initialization state */
 static int shadow_shm_initialized = 0;
@@ -3219,6 +3232,23 @@ static void init_shadow_shm(void)
         }
     } else {
         printf("Shadow: Failed to create overlay shm\n");
+    }
+
+    /* Create/open input mode param shared memory */
+    shm_input_param_fd = shm_open(SHM_SHADOW_INPUT_PARAM, O_CREAT | O_RDWR, 0666);
+    if (shm_input_param_fd >= 0) {
+        ftruncate(shm_input_param_fd, INPUT_PARAM_BUFFER_SIZE);
+        shadow_input_param_shm = (schwung_input_param_t *)mmap(NULL, INPUT_PARAM_BUFFER_SIZE,
+                                                                PROT_READ | PROT_WRITE,
+                                                                MAP_SHARED, shm_input_param_fd, 0);
+        if (shadow_input_param_shm == MAP_FAILED) {
+            shadow_input_param_shm = NULL;
+            printf("Shadow: Failed to mmap input param shm\n");
+        } else {
+            memset(shadow_input_param_shm, 0, INPUT_PARAM_BUFFER_SIZE);
+        }
+    } else {
+        printf("Shadow: Failed to create input param shm\n");
     }
 
     /* TTS engine uses lazy initialization - will init on first speak */
@@ -5362,11 +5392,81 @@ pre_done:
 
     TIME_SECTION_END(spi_jack_midi_out_sum, spi_jack_midi_out_max);
 
-    /* Copy pad LED colors (notes 68-99) to overlay SHM for shadow_ui to read */
+    /* Copy pad LED colors (notes 68-99) to overlay SHM for shadow_ui to read.
+     * Also snapshot the native baseline for the input-mode LED gate,
+     * so custom LED writes don't pollute our view of Move's pad layout. */
     if (shadow_overlay_shm) {
         for (int i = 0; i < 32; i++) {
             int color = led_queue_get_note_led_color(68 + i);
-            shadow_overlay_shm->pad_led_colors[i] = (color >= 0) ? (uint8_t)color : 0;
+            native_pad_led_baseline[i] = (color >= 0) ? (uint8_t)color : 0;
+            shadow_overlay_shm->pad_led_colors[i] = native_pad_led_baseline[i];
+        }
+
+        /* ---- Input mode custom pad LED rendering ---- */
+        if (!shadow_control->overtake_mode && shadow_control && shadow_input_param_shm) {
+            int did_render = 0;
+            for (int t = 0; t < SHADOW_UI_SLOTS; t++) {
+                uint8_t mode = shadow_input_mode_normalize(
+                    shadow_control->input_track_modes[t]);
+                if (mode == SCHWUNG_INPUT_MODE_NATIVE) continue;
+                if (shadow_control->input_led_modes[t] != SCHWUNG_INPUT_LED_MODULE) continue;
+
+                int active_track = shadow_control->input_active_track;
+                if (active_track < 0 || active_track >= SHADOW_UI_SLOTS)
+                    active_track = shadow_selected_slot;
+                if (t != active_track) continue;
+
+                int8_t oct = shadow_input_param_shm->octave[t];
+                int16_t params_copy[INPUT_PARAM_COUNT];
+                for (int i = 0; i < INPUT_PARAM_COUNT; i++) {
+                    params_copy[i] = shadow_input_param_shm->values[t][i];
+                }
+
+                uint8_t custom_colors[SCHWUNG_INPUT_MODE_PADS];
+                int lit = schwung_input_mode_render_leds(
+                    (schwung_input_mode_t)mode,
+                    params_copy, oct,
+                    native_pad_led_baseline,
+                    custom_colors);
+
+                if (lit > 0) {
+                    uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
+                    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+                        uint8_t new_color = custom_colors[i];
+                        custom_input_led_colors[i] = new_color;
+                        shadow_overlay_shm->pad_led_colors[i] = new_color;
+
+                        uint8_t note = (uint8_t)(68 + i);
+                        int slot = -1;
+                        for (int s = 0; s < 80; s += 4) {
+                            uint8_t s_status = midi_out[s + 1];
+                            if ((s_status & 0xF0) == 0x90 && midi_out[s + 2] == note) {
+                                slot = s;
+                                break;
+                            }
+                        }
+                        if (slot < 0) {
+                            for (int s = 0; s < 80; s += 4) {
+                                if (midi_out[s] == 0 && midi_out[s + 1] == 0 &&
+                                    midi_out[s + 2] == 0 && midi_out[s + 3] == 0) {
+                                    slot = s;
+                                    break;
+                                }
+                            }
+                        }
+                        if (slot >= 0) {
+                            midi_out[slot]     = 0x09;
+                            midi_out[slot + 1] = 0x90;
+                            midi_out[slot + 2] = note;
+                            midi_out[slot + 3] = new_color;
+                        }
+                    }
+                    did_render = 1;
+                }
+            }
+            if (!did_render) {
+                memset(custom_input_led_colors, 0, sizeof(custom_input_led_colors));
+            }
         }
     }
     TIME_SECTION_START();
@@ -5947,12 +6047,23 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (d1 < 68 || d1 > 99) continue;
 
             schwung_input_mode_result_t result;
+            int16_t input_params_copy[INPUT_PARAM_COUNT];
+            memset(input_params_copy, 0, sizeof(input_params_copy));
+            int8_t input_octave = 0;
+            if (shadow_input_param_shm && active_track >= 0 && active_track < SHADOW_UI_SLOTS) {
+                for (int i = 0; i < INPUT_PARAM_COUNT; i++) {
+                    input_params_copy[i] = shadow_input_param_shm->values[active_track][i];
+                }
+                input_octave = shadow_input_param_shm->octave[active_track];
+            }
             if (schwung_input_mode_handle_midi(&shadow_input_mode_state,
                                                active_track,
                                                cin,
                                                status,
                                                d1,
                                                d2,
+                                               input_params_copy,
+                                               input_octave,
                                                &result)) {
                 LOG_INFO("input_mode_pad",
                          "pad override note=%u type=%02x vel=%u active_track=%d packets=%u",
@@ -5961,6 +6072,47 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 hw_midi[j] = 0; hw_midi[j + 1] = 0; hw_midi[j + 2] = 0; hw_midi[j + 3] = 0;
                 shadow_input_mode_queue_result(&result);
                 shadow_midi_force_defer(2);
+            }
+        }
+    }
+
+    /* === UP/DOWN (OCTAVE) BUTTON INTERCEPTION ===
+     * When input mode is non-native for the active track, intercept
+     * CC 54 (Down) and CC 55 (Up) to adjust the performance octave shift. */
+    if (!overtake_mode && shadow_control && shadow_input_param_shm) {
+        int active_track = shadow_control->input_active_track;
+        if (active_track < 0 || active_track >= SHADOW_UI_SLOTS) {
+            active_track = shadow_selected_slot;
+        }
+        uint8_t track_mode = shadow_input_mode_normalize(
+            shadow_control->input_track_modes[active_track]);
+        if (track_mode != SCHWUNG_INPUT_MODE_NATIVE) {
+            for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {
+                uint8_t cin = hw_midi[j] & 0x0F;
+                uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+                if (cable != 0x00) continue;
+                if (cin != 0x0B) continue;
+                uint8_t d1 = hw_midi[j + 2];
+                uint8_t d2 = hw_midi[j + 3];
+                if (d1 == CC_DOWN || d1 == CC_UP) {
+                    if (d2 > 0) {
+                        int8_t cur = shadow_input_param_shm->octave[active_track];
+                        if (d1 == CC_UP) {
+                            shadow_input_param_shm->octave[active_track] = (int8_t)((cur < 4) ? cur + 1 : 4);
+                        } else {
+                            shadow_input_param_shm->octave[active_track] = (int8_t)((cur > -4) ? cur - 1 : -4);
+                        }
+                        LOG_INFO("input_mode_octave",
+                                 "octave shift track=%d dir=%s val=%d",
+                                 active_track, d1 == CC_UP ? "up" : "down",
+                                 shadow_input_param_shm->octave[active_track]);
+                    }
+                    /* Block from Move */
+                    hw_midi[j] = 0; hw_midi[j + 1] = 0; hw_midi[j + 2] = 0; hw_midi[j + 3] = 0;
+                    if (sh_midi && shadow_display_mode) {
+                        sh_midi[j] = 0; sh_midi[j + 1] = 0; sh_midi[j + 2] = 0; sh_midi[j + 3] = 0;
+                    }
+                }
             }
         }
     }

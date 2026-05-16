@@ -1,0 +1,55 @@
+{
+  "id": "chord-pads",
+  "name": "Chord Pads",
+  "version": "0.1.0",
+  "api_version": 1,
+  "component_type": "input_mode",
+  "description": "Each pad emits a diatonic triad. Configure root, scale, and chord voicing intervals.",
+  "author": "Schwung",
+  "capabilities": {
+    "input_mode": true,
+    "pad_led_modes": ["pass_through", "module"]
+  },
+  "input_mode": {
+    "engine": "host_static",
+    "mode": "chord_pads"
+  },
+  "params": [
+    {
+      "key": "root",
+      "name": "Root",
+      "label": "Root",
+      "type": "note",
+      "default": 60,
+      "min": 36,
+      "max": 72
+    },
+    {
+      "key": "scale",
+      "name": "Scale",
+      "label": "Scale",
+      "type": "enum",
+      "default": "major",
+      "options": ["Chromatic","Major","Minor","Dorian","Phrygian","Lydian","Mixolydian","Locrian","Harmonic Minor","Melodic Minor","Major Pentatonic","Minor Pentatonic","Blues"],
+      "values": ["chromatic","major","minor","dorian","phrygian","lydian","mixolydian","locrian","harmonic_minor","melodic_minor","major_pentatonic","minor_pentatonic","blues"]
+    },
+    {
+      "key": "index_2",
+      "name": "Index 2",
+      "label": "Index 2",
+      "type": "int",
+      "default": 2,
+      "min": 1,
+      "max": 7
+    },
+    {
+      "key": "index_3",
+      "name": "Index 3",
+      "label": "Index 3",
+      "type": "int",
+      "default": 4,
+      "min": 1,
+      "max": 7
+    }
+  ]
+}
