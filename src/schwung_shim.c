@@ -30,6 +30,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <limits.h>
 #if ENABLE_SCREEN_READER
 #include <dbus/dbus.h>
 #include <systemd/sd-bus.h>
@@ -56,6 +57,7 @@
 #include "host/shadow_state.h"
 #include "host/shadow_midi.h"
 #include "host/input_mode.h"
+#include "host/sentry_mode.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
@@ -623,24 +625,16 @@ static volatile int shadow_selected_slot = 0;
 static schwung_input_mode_state_t shadow_input_mode_state;
 static int shadow_input_mode_initialized = 0;
 static uint8_t shadow_input_mode_pad_held[SCHWUNG_INPUT_MODE_PADS];
+static int shadow_input_mode_custom_pad_colors[SCHWUNG_INPUT_MODE_PADS];
+static uint8_t shadow_input_mode_custom_pad_valid[SCHWUNG_INPUT_MODE_PADS];
 static int shadow_input_mode_led_allows_override = 0;
-static schwung_input_led_grid_mode_t shadow_input_mode_led_grid_mode =
-    SCHWUNG_INPUT_LED_GRID_UNKNOWN_NON_NOTE;
 
-#define SHADOW_INPUT_MODE_LED_SETTLE_FRAMES 4
-#define SHADOW_INPUT_MODE_LED_TIMEOUT_FRAMES 96
-#define SHADOW_INPUT_MODE_TRACK_SETTLE_FRAMES 12
-#define SHADOW_INPUT_MODE_TRACK_TIMEOUT_FRAMES 180
-#define SHADOW_INPUT_MODE_TRACK_RETRY_FRAMES 12
-
-static int shadow_input_mode_led_sample_frames = 0;
-static uint32_t shadow_input_mode_led_wait_generation = 0;
-static int shadow_input_mode_led_seen_repaint = 0;
-static int shadow_input_mode_led_settle_frames = 0;
-static int shadow_input_mode_led_timeout_frames = 0;
-static int shadow_input_mode_led_required_settle_frames = SHADOW_INPUT_MODE_LED_SETTLE_FRAMES;
-static int shadow_input_mode_led_confirm_play = 0;
-static const char *shadow_input_mode_led_sample_reason = "unknown";
+static volatile int shadow_sentry_ui_mode = SCHWUNG_SENTRY_MODE_UNKNOWN;
+static volatile uint32_t shadow_sentry_ui_mode_generation = 0;
+static volatile int shadow_sentry_watcher_started = 0;
+static uint32_t shadow_input_mode_sentry_generation_seen = UINT32_MAX;
+static uint32_t shadow_input_mode_set_generation_seen = UINT32_MAX;
+static int shadow_input_mode_set_reload_active = 0;
 
 /* Mute button hold state: 1 while CC 88 is held, 0 when released */
 static volatile int shadow_mute_held = 0;
@@ -653,18 +647,186 @@ static volatile int shadow_mute_held = 0;
 static int shim_run_command(const char *const argv[]);  /* forward decl */
 static float shim_get_bpm(void);  /* forward decl */
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#define SHADOW_SENTRY_ROOT "/data/UserData/Sentry"
+#define SHADOW_SENTRY_POLL_USEC 50000
+#define SHADOW_SENTRY_BREADCRUMB_MAX 65536
+
+static int shadow_sentry_candidate_is_newer(const struct stat *st, time_t best_mtime, off_t best_size)
+{
+    if (!st) return 0;
+    if (st->st_mtime > best_mtime) return 1;
+    if (st->st_mtime == best_mtime && st->st_size > best_size) return 1;
+    return 0;
+}
+
+static int shadow_sentry_find_latest_breadcrumb(char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return 0;
+    DIR *dir = opendir(SHADOW_SENTRY_ROOT);
+    if (!dir) return 0;
+
+    int found = 0;
+    time_t best_mtime = 0;
+    off_t best_size = -1;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        size_t name_len = strlen(entry->d_name);
+        if (name_len < 5 || strcmp(entry->d_name + name_len - 4, ".run") != 0) continue;
+
+        for (int i = 1; i <= 2; i++) {
+            char path[PATH_MAX];
+            int written = snprintf(path, sizeof(path), "%s/%s/__sentry-breadcrumb%d",
+                                   SHADOW_SENTRY_ROOT, entry->d_name, i);
+            if (written <= 0 || written >= (int)sizeof(path)) continue;
+
+            struct stat st;
+            if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) continue;
+            if (!found || shadow_sentry_candidate_is_newer(&st, best_mtime, best_size)) {
+                snprintf(out, out_size, "%s", path);
+                best_mtime = st.st_mtime;
+                best_size = st.st_size;
+                found = 1;
+            }
+        }
+    }
+
+    closedir(dir);
+    return found;
+}
+
+static int shadow_sentry_read_mode_from_file(const char *path, int fallback)
+{
+    if (!path || !path[0]) return fallback;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return fallback;
+
+    char buf[SHADOW_SENTRY_BREADCRUMB_MAX];
+    ssize_t n = read(fd, buf, sizeof(buf));
+    close(fd);
+    if (n <= 0) return fallback;
+
+    return schwung_sentry_mode_parse_buffer(buf, (size_t)n, fallback);
+}
+
+static void *shadow_sentry_mode_watcher_thread(void *arg)
+{
+    (void)arg;
+    char path[PATH_MAX];
+    int last_mode = SCHWUNG_SENTRY_MODE_UNKNOWN;
+
+    for (;;) {
+        if (shadow_sentry_find_latest_breadcrumb(path, sizeof(path))) {
+            int mode = shadow_sentry_read_mode_from_file(path, last_mode);
+            if (mode != last_mode) {
+                last_mode = mode;
+                shadow_sentry_ui_mode = mode;
+                shadow_sentry_ui_mode_generation++;
+                LOG_INFO("input_mode",
+                         "sentry MainMode=%s mode=%d gen=%u path=%s",
+                         schwung_sentry_mode_name(mode),
+                         mode,
+                         shadow_sentry_ui_mode_generation,
+                         path);
+            }
+        }
+        usleep(SHADOW_SENTRY_POLL_USEC);
+    }
+    return NULL;
+}
+
+static void shadow_sentry_mode_watcher_start(void)
+{
+    if (shadow_sentry_watcher_started) return;
+    shadow_sentry_watcher_started = 1;
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, shadow_sentry_mode_watcher_thread, NULL) == 0) {
+        pthread_detach(tid);
+        LOG_INFO("input_mode", "sentry MainMode watcher started");
+    } else {
+        shadow_sentry_watcher_started = 0;
+        LOG_INFO("input_mode", "sentry MainMode watcher failed to start");
+    }
+}
+
+static void shadow_input_mode_clear_custom_leds(void)
+{
+    memset(shadow_input_mode_custom_pad_colors, 0, sizeof(shadow_input_mode_custom_pad_colors));
+    memset(shadow_input_mode_custom_pad_valid, 0, sizeof(shadow_input_mode_custom_pad_valid));
+}
+
+static void shadow_input_mode_clear_led_ownership(void)
+{
+    shadow_input_mode_clear_custom_leds();
+    led_queue_clear_pending_pad_leds();
+}
+
+static int shadow_input_mode_has_custom_led_ownership(void)
+{
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+        if (shadow_input_mode_custom_pad_valid[i]) return 1;
+    }
+    return 0;
+}
+
+static void shadow_input_mode_begin_native_led_handoff(void)
+{
+    int was_custom_note = shadow_input_mode_led_allows_override &&
+                          shadow_input_mode_has_custom_led_ownership();
+    led_queue_clear_pending_pad_leds();
+    if (was_custom_note) {
+        led_queue_queue_native_pad_leds();
+    }
+    shadow_input_mode_clear_custom_leds();
+}
+
+static void shadow_input_mode_record_custom_led(uint8_t cin, uint8_t status, uint8_t note, uint8_t color)
+{
+    (void)cin;
+    if ((status & 0xF0) != 0x90 || note < 68 || note > 99) return;
+    int idx = note - 68;
+    shadow_input_mode_custom_pad_colors[idx] = color;
+    shadow_input_mode_custom_pad_valid[idx] = 1;
+}
+
+static void shadow_input_mode_queue_leds_if_allowed(const schwung_input_mode_result_t *result)
+{
+    if (!result || !shadow_input_mode_led_allows_override) return;
+    for (int i = 0; i < result->light_count; i++) {
+        uint8_t cin = result->light_packets[i][0];
+        uint8_t status = result->light_packets[i][1];
+        uint8_t data1 = result->light_packets[i][2];
+        uint8_t data2 = result->light_packets[i][3];
+        shadow_input_mode_record_custom_led(cin, status, data1, data2);
+        shadow_queue_led(cin, status, data1, data2);
+    }
+}
+
+static int shadow_input_mode_should_suppress_move_led(uint8_t cin,
+                                                      uint8_t status,
+                                                      uint8_t data1,
+                                                      uint8_t data2)
+{
+    (void)cin;
+    (void)data2;
+    if (!shadow_input_mode_led_allows_override) return 0;
+    uint8_t type = status & 0xF0;
+    if ((type != 0x90 && type != 0x80) || data1 < 68 || data1 > 99) return 0;
+    int idx = data1 - 68;
+    return shadow_input_mode_custom_pad_valid[idx] != 0;
+}
+
 static void shadow_input_mode_queue_result(const schwung_input_mode_result_t *result)
 {
     if (!result) return;
     for (int i = 0; i < result->count; i++) {
         shadow_chain_midi_inject(result->packets[i], 4);
     }
-    for (int i = 0; i < result->light_count; i++) {
-        shadow_queue_led(result->light_packets[i][0],
-                         result->light_packets[i][1],
-                         result->light_packets[i][2],
-                         result->light_packets[i][3]);
-    }
+    shadow_input_mode_queue_leds_if_allowed(result);
 }
 
 static void shadow_input_mode_apply_param_updates(int track, const schwung_input_mode_result_t *result)
@@ -812,262 +974,140 @@ static void shadow_input_mode_update_pad_holds(const uint8_t *midi_in)
     }
 }
 
-static int shadow_input_mode_update_led_gate(void)
+static void shadow_input_mode_redraw_active_track_leds(void)
 {
-    int colors[SCHWUNG_INPUT_MODE_PADS];
-    int unique_all[16] = {0};
-    int unique_nonzero[16] = {0};
-    int unique_all_count = 0;
-    int unique_nonzero_count = 0;
-    int considered = 0;
-    int lit_count = 0;
-    int play_lit_count = 0;
-    int row_unique_counts[4] = {0};
-    int row_dominants[4] = {0};
-    int row_uniform_count = 0;
-    int left_color = 0;
-    int left_count = 0;
-    int left_match = 0;
-    int left_colors[8] = {0};
-    int left_color_counts[8] = {0};
-    int left_unique_count = 0;
-    int right_unique[16] = {0};
-    int right_unique_count = 0;
+    if (!shadow_input_mode_led_allows_override) return;
+    int active_track = shadow_control ? shadow_control->input_active_track : shadow_selected_slot;
+    if (active_track < 0 || active_track >= SHADOW_UI_SLOTS) active_track = shadow_selected_slot;
+    if (active_track < 0 || active_track >= SHADOW_UI_SLOTS) return;
 
-    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
-        int color = led_queue_get_note_led_color(68 + i);
-        colors[i] = color >= 0 ? color : 0;
+    schwung_input_mode_result_t led_result;
+    if (schwung_input_mode_update_leds(&shadow_input_mode_state, active_track, &led_result)) {
+        shadow_input_mode_queue_leds_if_allowed(&led_result);
     }
+}
 
-    schwung_input_led_grid_mode_t grid_mode =
-        schwung_input_mode_detect_led_grid_mode(colors, shadow_input_mode_pad_held);
-    schwung_input_view_class_t view =
-        schwung_input_mode_classify_led_grid(colors, shadow_input_mode_pad_held);
-    shadow_input_mode_led_grid_mode = grid_mode;
-    int allow_override = (view == SCHWUNG_INPUT_VIEW_PLAY);
+static void shadow_input_mode_apply_sentry_gate(void)
+{
+    uint32_t gen = shadow_sentry_ui_mode_generation;
+    int mode = shadow_sentry_ui_mode;
+    int allow_override = (mode == SCHWUNG_SENTRY_MODE_NOTE);
+    if (gen == shadow_input_mode_sentry_generation_seen &&
+        allow_override == shadow_input_mode_led_allows_override) {
+        return;
+    }
+    shadow_input_mode_sentry_generation_seen = gen;
 
-    for (int idx = 0; idx < SCHWUNG_INPUT_MODE_PADS; idx++) {
-        if (shadow_input_mode_pad_held[idx]) continue;
-        int color = colors[idx] > 0 ? colors[idx] : 0;
-        considered++;
-        if (color > 0) lit_count++;
-        if (color > 0 && color != 2) play_lit_count++;
+    int was_allowed = shadow_input_mode_led_allows_override;
 
-        int seen = 0;
-        for (int i = 0; i < unique_all_count; i++) {
-            if (unique_all[i] == color) { seen = 1; break; }
-        }
-        if (!seen && unique_all_count < (int)(sizeof(unique_all) / sizeof(unique_all[0]))) {
-            unique_all[unique_all_count++] = color;
-        }
-        if (color > 0) {
-            seen = 0;
-            for (int i = 0; i < unique_nonzero_count; i++) {
-                if (unique_nonzero[i] == color) { seen = 1; break; }
-            }
-            if (!seen && unique_nonzero_count < (int)(sizeof(unique_nonzero) / sizeof(unique_nonzero[0]))) {
-                unique_nonzero[unique_nonzero_count++] = color;
-            }
-        }
-
-        int col = idx % 8;
-        if (col < 4) {
-            left_count++;
-            if (color > 0) {
-                seen = 0;
-                for (int i = 0; i < left_unique_count; i++) {
-                    if (left_colors[i] == color) {
-                        left_color_counts[i]++;
-                        seen = 1;
-                        break;
-                    }
-                }
-                if (!seen && left_unique_count < (int)(sizeof(left_colors) / sizeof(left_colors[0]))) {
-                    left_colors[left_unique_count] = color;
-                    left_color_counts[left_unique_count] = 1;
-                    left_unique_count++;
-                }
-            }
+    if (allow_override) {
+        shadow_input_mode_led_allows_override = 1;
+        if (shadow_control) shadow_control->move_ui_mode = 2;
+        shadow_input_mode_redraw_active_track_leds();
+    } else {
+        if (was_allowed) {
+            shadow_input_mode_begin_native_led_handoff();
         } else {
-            seen = 0;
-            for (int i = 0; i < right_unique_count; i++) {
-                if (right_unique[i] == color) { seen = 1; break; }
-            }
-            if (!seen && right_unique_count < (int)(sizeof(right_unique) / sizeof(right_unique[0]))) {
-                right_unique[right_unique_count++] = color;
+            shadow_input_mode_clear_custom_leds();
+            led_queue_clear_pending_pad_leds();
+        }
+        shadow_input_mode_led_allows_override = 0;
+        if (shadow_control) {
+            if (mode == SCHWUNG_SENTRY_MODE_SESSION) {
+                shadow_control->move_ui_mode = 1;
+            } else if (mode == SCHWUNG_SENTRY_MODE_SET_OVERVIEW) {
+                shadow_control->move_ui_mode = 3;
+            } else {
+                shadow_control->move_ui_mode = 0;
             }
         }
     }
-
-    for (int row = 0; row < 4; row++) {
-        int row_unique[8] = {0};
-        int row_unique_count = 0;
-        int row_considered = 0;
-        int dominant = 0;
-        for (int col = 0; col < 8; col++) {
-            int idx = row * 8 + col;
-            if (shadow_input_mode_pad_held[idx]) continue;
-            int color = colors[idx] > 0 ? colors[idx] : 0;
-            row_considered++;
-            if (color == 0) continue;
-            int seen = 0;
-            for (int i = 0; i < row_unique_count; i++) {
-                if (row_unique[i] == color) { seen = 1; break; }
-            }
-            if (!seen && row_unique_count < (int)(sizeof(row_unique) / sizeof(row_unique[0]))) {
-                row_unique[row_unique_count++] = color;
-            }
-            dominant = color;
-        }
-        row_unique_counts[row] = row_unique_count;
-        row_dominants[row] = dominant;
-        if (row_considered >= 4 && row_unique_count <= 1) row_uniform_count++;
-    }
-
-    for (int i = 0; i < left_unique_count; i++) {
-        if (left_color_counts[i] > left_match) {
-            left_color = left_colors[i];
-            left_match = left_color_counts[i];
-        }
-    }
-
-    if (shadow_input_mode_led_confirm_play && view != SCHWUNG_INPUT_VIEW_PLAY) {
-        allow_override = 0;
-    }
-    shadow_input_mode_led_allows_override = allow_override;
 
     LOG_INFO("input_mode",
-             "led sample reason=%s grid_mode=%d view=%d allow=%d confirm=%d active_track=%d selected=%d modes=%d,%d,%d,%d considered=%d lit=%d play_lit=%d unique_all=%d unique_nonzero=%d row_uniform=%d row_unique=%d,%d,%d,%d row_dom=%d,%d,%d,%d drum_left=%d/%d color=%d right_unique=%d held=%02x%02x%02x%02x",
-             shadow_input_mode_led_sample_reason, shadow_input_mode_led_grid_mode,
-             view, shadow_input_mode_led_allows_override,
-             shadow_input_mode_led_confirm_play,
+             "sentry gate MainMode=%s mode=%d gen=%u allow=%d active_track=%d selected=%d modes=%d,%d,%d,%d",
+             schwung_sentry_mode_name(mode),
+             mode,
+             gen,
+             shadow_input_mode_led_allows_override,
              shadow_control ? shadow_control->input_active_track : -1,
              shadow_selected_slot,
              shadow_input_mode_state.tracks[0].mode,
              shadow_input_mode_state.tracks[1].mode,
              shadow_input_mode_state.tracks[2].mode,
-             shadow_input_mode_state.tracks[3].mode,
-             considered, lit_count, play_lit_count, unique_all_count, unique_nonzero_count, row_uniform_count,
-             row_unique_counts[3], row_unique_counts[2], row_unique_counts[1], row_unique_counts[0],
-             row_dominants[3], row_dominants[2], row_dominants[1], row_dominants[0],
-             left_match, left_count, left_color, right_unique_count,
-             shadow_input_mode_pad_held[24] ? 1 : 0,
-             shadow_input_mode_pad_held[16] ? 1 : 0,
-             shadow_input_mode_pad_held[8] ? 1 : 0,
-             shadow_input_mode_pad_held[0] ? 1 : 0);
+             shadow_input_mode_state.tracks[3].mode);
+}
+
+static void shadow_input_mode_note_navigation_hint(const char *reason)
+{
     LOG_INFO("input_mode",
-             "led rows top->bottom: 92-99=%d,%d,%d,%d,%d,%d,%d,%d 84-91=%d,%d,%d,%d,%d,%d,%d,%d 76-83=%d,%d,%d,%d,%d,%d,%d,%d 68-75=%d,%d,%d,%d,%d,%d,%d,%d",
-             colors[24], colors[25], colors[26], colors[27], colors[28], colors[29], colors[30], colors[31],
-             colors[16], colors[17], colors[18], colors[19], colors[20], colors[21], colors[22], colors[23],
-             colors[8], colors[9], colors[10], colors[11], colors[12], colors[13], colors[14], colors[15],
-             colors[0], colors[1], colors[2], colors[3], colors[4], colors[5], colors[6], colors[7]);
-
-    if (shadow_control) {
-        if (allow_override) {
-            shadow_control->move_ui_mode = 2; /* inferred Note/play layout */
-        } else if (view == SCHWUNG_INPUT_VIEW_NON_PLAY) {
-            shadow_control->move_ui_mode = 1; /* known non-note layout */
-        } else if (shadow_control->move_ui_mode == 2) {
-            shadow_control->move_ui_mode = 0; /* stale Note inference; fail closed */
-        }
-    }
-
-    return shadow_input_mode_led_allows_override;
-}
-
-static void shadow_input_mode_schedule_led_gate_update_ex(const char *reason,
-                                                          int confirm_play,
-                                                          int settle_frames,
-                                                          int timeout_frames,
-                                                          int clear_pad_cache)
-{
-    if (clear_pad_cache) {
-        led_queue_clear_pad_led_cache();
-    }
-    shadow_input_mode_led_sample_frames = 1;
-    shadow_input_mode_led_wait_generation = led_queue_get_pad_led_generation();
-    shadow_input_mode_led_seen_repaint = 0;
-    shadow_input_mode_led_settle_frames = 0;
-    shadow_input_mode_led_required_settle_frames = settle_frames;
-    shadow_input_mode_led_timeout_frames = timeout_frames;
-    shadow_input_mode_led_confirm_play = confirm_play;
-    shadow_input_mode_led_sample_reason = reason ? reason : "unknown";
-    shadow_input_mode_led_allows_override = 0;
-    if (shadow_control && shadow_control->move_ui_mode == 2) {
-        shadow_control->move_ui_mode = 0; /* repaint pending; fail closed */
-    }
-    LOG_INFO("input_mode",
-             "led sample scheduled reason=%s gen=%u settle=%d timeout=%d confirm=%d clear=%d",
-             shadow_input_mode_led_sample_reason,
-             shadow_input_mode_led_wait_generation,
-             shadow_input_mode_led_required_settle_frames,
-             shadow_input_mode_led_timeout_frames,
-             shadow_input_mode_led_confirm_play,
-             clear_pad_cache);
-}
-
-static void shadow_input_mode_schedule_led_gate_update(const char *reason)
-{
-    shadow_input_mode_schedule_led_gate_update_ex(reason,
-                                                  0,
-                                                  SHADOW_INPUT_MODE_LED_SETTLE_FRAMES,
-                                                  SHADOW_INPUT_MODE_LED_TIMEOUT_FRAMES,
-                                                  1);
-}
-
-static void shadow_input_mode_schedule_track_led_gate_update(void)
-{
-    int keep_note_cache = shadow_input_mode_led_allows_override &&
-                          shadow_input_mode_led_grid_mode == SCHWUNG_INPUT_LED_GRID_NOTE;
-    shadow_input_mode_schedule_led_gate_update_ex("track",
-                                                  1,
-                                                  SHADOW_INPUT_MODE_TRACK_SETTLE_FRAMES,
-                                                  SHADOW_INPUT_MODE_TRACK_TIMEOUT_FRAMES,
-                                                  keep_note_cache ? 0 : 1);
+             "navigation hint reason=%s sentry_mode=%s gen=%u allow=%d",
+             reason ? reason : "unknown",
+             schwung_sentry_mode_name(shadow_sentry_ui_mode),
+             shadow_sentry_ui_mode_generation,
+             shadow_input_mode_led_allows_override);
 }
 
 static void shadow_input_mode_disable_runtime_gate(void)
 {
     shadow_input_mode_led_allows_override = 0;
-    shadow_input_mode_led_sample_frames = 0;
-    shadow_input_mode_led_seen_repaint = 0;
-    shadow_input_mode_led_settle_frames = 0;
-    shadow_input_mode_led_timeout_frames = 0;
-    shadow_input_mode_led_confirm_play = 0;
-    shadow_input_mode_led_grid_mode = SCHWUNG_INPUT_LED_GRID_UNKNOWN_NON_NOTE;
     memset(shadow_input_mode_pad_held, 0, sizeof(shadow_input_mode_pad_held));
+    shadow_input_mode_clear_led_ownership();
     if (shadow_control && shadow_control->move_ui_mode == 2) {
         shadow_control->move_ui_mode = 0;
     }
 }
 
-static void shadow_input_mode_maybe_update_led_gate(void)
+static void shadow_input_mode_reset_runtime_state_for_set_change(void)
 {
-    if (shadow_input_mode_led_sample_frames <= 0) return;
-    uint32_t gen = led_queue_get_pad_led_generation();
-    if (gen != shadow_input_mode_led_wait_generation) {
-        shadow_input_mode_led_wait_generation = gen;
-        shadow_input_mode_led_seen_repaint = 1;
-        shadow_input_mode_led_settle_frames = shadow_input_mode_led_required_settle_frames;
-    } else if (shadow_input_mode_led_seen_repaint && shadow_input_mode_led_settle_frames > 0) {
-        shadow_input_mode_led_settle_frames--;
-    }
-
-    if (shadow_input_mode_led_timeout_frames > 0) {
-        shadow_input_mode_led_timeout_frames--;
-    }
-
-    if ((shadow_input_mode_led_seen_repaint && shadow_input_mode_led_settle_frames == 0) ||
-        shadow_input_mode_led_timeout_frames == 0) {
-        int timed_out = (shadow_input_mode_led_timeout_frames == 0);
-        int allow_override = shadow_input_mode_update_led_gate();
-        if (!shadow_input_mode_led_confirm_play || allow_override || timed_out) {
-            shadow_input_mode_led_sample_frames = 0;
-            shadow_input_mode_led_confirm_play = 0;
-        } else {
-            shadow_input_mode_led_settle_frames = SHADOW_INPUT_MODE_TRACK_RETRY_FRAMES;
+    shadow_input_mode_ensure_initialized();
+    for (int track = 0; track < SHADOW_UI_SLOTS; track++) {
+        schwung_input_mode_result_t result;
+        if (schwung_input_mode_set_track_module(&shadow_input_mode_state, track, "native", &result)) {
+            shadow_input_mode_queue_result(&result);
+        }
+        if (schwung_input_mode_set_track_mode(&shadow_input_mode_state, track,
+                                              SCHWUNG_INPUT_MODE_NATIVE,
+                                              &result)) {
+            shadow_input_mode_queue_result(&result);
         }
     }
+    schwung_input_mode_init(&shadow_input_mode_state);
+    shadow_input_mode_initialized = 1;
+    shadow_input_mode_disable_runtime_gate();
+}
+
+static int shadow_input_mode_handle_set_change(void)
+{
+    if (!shadow_control) return 0;
+
+    uint32_t gen = shadow_set_loaded_generation;
+    int set_reload_pending = (shadow_control->ui_flags & SHADOW_UI_FLAG_SET_CHANGED) != 0;
+
+    if (gen != shadow_input_mode_set_generation_seen) {
+        shadow_input_mode_set_generation_seen = gen;
+        shadow_input_mode_set_reload_active = 1;
+        shadow_input_mode_reset_runtime_state_for_set_change();
+        shadow_input_mode_sentry_generation_seen = UINT32_MAX;
+        LOG_INFO("input_mode",
+                 "set change detected gen=%u pending=%d; runtime input mode gate disabled",
+                 gen,
+                 set_reload_pending);
+    }
+
+    if (shadow_input_mode_set_reload_active) {
+        if (set_reload_pending) {
+            shadow_input_mode_disable_runtime_gate();
+            shadow_input_mode_sentry_generation_seen = UINT32_MAX;
+            return 1;
+        }
+        shadow_input_mode_set_reload_active = 0;
+        shadow_input_mode_sentry_generation_seen = UINT32_MAX;
+        LOG_INFO("input_mode",
+                 "set change reload complete gen=%u; runtime input mode gate can resync",
+                 gen);
+    }
+
+    return 0;
 }
 
 /* shadow_apply_mute, shadow_toggle_solo now in shadow_chain_mgmt.c */
@@ -4124,6 +4164,7 @@ static void shim_init_subsystems(void)
             .shadow_control = &shadow_control,
             .shadow_ui_midi_shm = &shadow_ui_midi_shm,
             .passthrough_ccs = overtake_passthrough_ccs,
+            .suppress_move_led = shadow_input_mode_should_suppress_move_led,
         };
         led_queue_init(&led_host);
     }
@@ -6020,12 +6061,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         memcpy(sh_midi, hw_midi, MIDI_BUFFER_SIZE);
     }
 
-    shadow_input_mode_sync_control();
-    if (overtake_mode) {
+    int input_mode_set_reload_pending =
+        shadow_control ? shadow_input_mode_handle_set_change() : 0;
+    if (!input_mode_set_reload_pending) {
+        shadow_input_mode_sync_control();
+    }
+    if (overtake_mode || input_mode_set_reload_pending) {
         shadow_input_mode_disable_runtime_gate();
     } else if (shadow_control) {
         shadow_input_mode_update_pad_holds(hw_midi);
-        shadow_input_mode_maybe_update_led_gate();
+        shadow_input_mode_apply_sentry_gate();
     }
     if (!overtake_mode && shadow_control && shadow_input_mode_led_allows_override) {
         int active_track = shadow_control->input_active_track;
@@ -6365,7 +6410,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     /* Update selected slot when track is pressed (for Shift+Knob routing)
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
                     if (pressed) {
-                        shadow_input_mode_schedule_track_led_gate_update();
+                        shadow_input_mode_note_navigation_hint("track");
                         int new_slot = 43 - d1;  /* Reverse: CC43→0, CC42→1, CC41→2, CC40→3 */
                         if (shadow_control) {
                             shadow_control->input_active_track = (uint8_t)new_slot;
@@ -6381,6 +6426,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             snprintf(msg, sizeof(msg), "Selected slot: %d (Track %d)", new_slot, new_slot + 1);
                             shadow_log(msg);
                         }
+                        shadow_input_mode_redraw_active_track_leds();
 
                         /* Shift + Mute + Track = toggle solo; Mute + Track = toggle mute */
                         if (shadow_mute_held) {
@@ -6455,7 +6501,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 }
 
                 if (d1 == CC_MENU) {
-                    shadow_input_mode_schedule_led_gate_update(d2 > 0 ? "menu-press" : "menu-release");
+                    shadow_input_mode_note_navigation_hint(d2 > 0 ? "menu-press" : "menu-release");
                 }
 
                 /* Menu button long-press detection */
@@ -6658,7 +6704,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 }
 
                 if (d1 == 16 && type == 0x90 && d2 > 0 && shadow_shift_held) {
-                    shadow_input_mode_schedule_led_gate_update("shift-step1");
+                    shadow_input_mode_note_navigation_hint("shift-step1");
                 }
 
                 /* Step 2 (note 17) long-press detection (Shift held, without Vol) */
@@ -7638,6 +7684,8 @@ static void shim_spi_init(void)
         pthread_create(&tid, NULL, spi_timing_logger_thread, NULL);
         pthread_detach(tid);
     }
+
+    shadow_sentry_mode_watcher_start();
 
     /* Start short-lived thread to retry attaching /schwung-link-in read-only.
      * Sidecar may not be up yet at shim load; this exits once attached or

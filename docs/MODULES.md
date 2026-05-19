@@ -138,7 +138,9 @@ Input modules that need the current set key/scale can use `shadow_get_set_musica
 
 Input modules receive their resolved `chain_params` through the input module API. Module detail pages use the same edit flow as other Shadow UI parameter pages: click to enter edit mode, jog/knob to adjust, click to confirm. Non-Native melodic layouts can intercept the native - and + buttons and return parameter updates, such as changing an `octave` parameter.
 
-At runtime, pad remapping is enabled by a shim-side classifier that watches Move's pad LED grid after native navigation gestures repaint it. Playable note/chromatic/drum LED layouts allow input modules to rewrite pads; track, set, and unknown LED layouts pass pads through.
+At runtime, pad remapping is enabled only when a shim-side Sentry watcher sees Move's native `MainMode` enter `note`. Session view, Set Overview, and unknown modes pass pads through.
+
+Input modules can implement the optional `update_leds()` callback from `src/host/input_mode_api_v1.h` to provide a custom 32-pad LED layout. The module only describes the desired LED packets. The core shim decides when it is safe to write them, tracks those custom writes separately from Move's native LED state, and blocks native pad LED packets from hardware for pads currently owned by a custom layout while still caching those native packets for handoff.
 
 Users open the menu with Shift + Volume Touch + Step 9. Settings are saved per set in `input_modes.json`; see [INPUT_MODES.md](INPUT_MODES.md) for the full format and shim behavior.
 

@@ -9,15 +9,11 @@ The first implementation is intentionally small and safe. It ships three core in
 - **Chromatic**: the 32 pads are remapped to a chromatic range from a configurable `root` and `octave`, then injected back into Move as external cable-2 MIDI on the selected track's channel. The original pad note is blocked so Move only hears the remapped note.
 - **Chords**: each pad emits a three-note scale chord. The `root`, `scale`, `index_2`, and `index_3` parameters define the chord tones; defaults are root, third, and fifth.
 
-LED behavior is still native in this pass. The shared state includes per-track LED mode and track color cache fields so LED-driving modules can be added later without changing the persistence format.
+Input modules can also paint their own pad LEDs while their layout is active. The host tracks Schwung's custom writes separately from Move's native LED stream so custom layouts do not fight with Move's own LED updates.
 
-The shim only applies input overrides when Move's pad LED grid looks like a playable Note layout. It watches Move's own pad LED MIDI, ignores pads that are currently held, and classifies the grid only after native navigation gestures that repaint the pads: track buttons, Menu, and Shift + Step 1. Normal pad playing does not continuously reclassify the grid.
+The shim only applies input overrides when Move reports that its native `MainMode` is `note`. A background watcher reads Move's Sentry breadcrumb files under `/data/UserData/Sentry`, parses the latest `Set MainMode` breadcrumb, and publishes a cached mode to the real-time SPI path. `session`, `songOverview`, and unknown modes pass pad events through unchanged.
 
-- Note layouts pass when the grid is mostly two colors, with optional off pads for chromatic layouts.
-- Drum layouts pass when the left half is a consistent drum-pad color and the right half is off or note-like.
-- Track and Set layouts fail because they are row-uniform track colors or many independent set colors.
-
-Unknown layouts fail closed, so Session view, Set Overview, and set selection pass pad events through unchanged.
+Custom LED writes are only sent while the Sentry watcher says Move is in Note mode. This keeps Session view, Set Overview, set selection, and Schwung overtake screens from playing transformed pads.
 
 ## On-Device Shortcut
 
@@ -111,6 +107,12 @@ Their `chain_params` entries define the UI used by the Shadow UI. Their real-tim
 
 For native input modules, set `dsp` to the shared object filename and use `input_mode.engine: "native_dsp"`. The shared object must export `schwung_input_module_init_v1()` from `src/host/input_mode_api_v1.h`. The API receives raw MIDI/button packets and returns replacement MIDI packets, optional light packets, and optional parameter updates.
 
+Modules that need custom pad lighting should implement the optional `update_leds()` callback. The host calls it when the module is selected, when parameters change, when pad note state changes, and when the shim re-enters a playable Note layout. The callback fills `light_packets` with the desired 32-pad layout; the shim handles deciding whether it is currently safe to write those packets to Move. The bundled input modules track held pads internally so pressed pads can be highlighted, then restored to root/normal colors on release.
+
+The shim records every custom pad LED write. While a custom layout owns a pad in Note mode, Move-originated pad LED packets for that pad still update the native LED cache, but are blocked before they reach hardware. When the Sentry watcher reports that Move left Note mode, pending custom pad LED writes are cleared and the latest cached native pad LEDs are queued as a handoff batch so Move's native view takes over again.
+
+When set tracking detects a different active set, the shim immediately clears custom pad LED ownership and unloads the runtime input module instances. Input overrides stay suspended while the Shadow UI handles the `SET_CHANGED` reload flag, then resync from the new set's `input_modes.json` after that flag is cleared.
+
 For compatibility with earlier state files, `input_mode.mode` can still be one of the supported layout values:
 
 - `native`
@@ -132,13 +134,15 @@ Shadow UI modules can read it with `shadow_get_set_musical_context()`. The value
 
 ## Developer Notes
 
-The host-side core lives in `src/host/input_mode.c` and is deliberately independent of the shim. It loads input module DSP files, forwards module params, tracks held pads for safe note-offs, and carries a separate light-packet list for modules that want to repaint pads later. Unit tests compile the bundled input modules as shared objects and cover module loading, pad mapping, pass-through behavior, and panic notes emitted when switching a track back to Native while notes are held.
+The host-side core lives in `src/host/input_mode.c` and is deliberately independent of the shim. It loads input module DSP files, forwards module params, tracks held pads for safe note-offs, and carries a separate light-packet list for modules that repaint pads. Unit tests compile the bundled input modules as shared objects and cover module loading, pad mapping, pass-through behavior, LED packet handling, and panic notes emitted when switching a track back to Native while notes are held.
 
 The shim owns the real-time wiring:
 
 - `src/schwung_shim.c` watches the selected track and intercepts cable-0 pad notes.
 - Remapped notes are queued through `shadow_chain_midi_inject()` as cable-2 packets.
 - `shadow_midi_force_defer(2)` prevents same-frame cable-0/cable-2 injection races.
+- A background Sentry watcher gates input overrides to Move's native Note mode.
+- Input module LED packets are queued only while that Sentry gate allows pad overrides.
 - `src/shadow/shadow_ui.js` loads and saves per-set input mode state.
 
 Any future mode should follow the same rule as the current Chromatic mode: if Schwung transforms a physical pad event, block the original pad event and emit all required note-offs when the mode changes.

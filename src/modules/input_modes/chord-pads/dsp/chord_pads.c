@@ -10,6 +10,7 @@ typedef struct {
     int octave;
     int index_2;
     int index_3;
+    uint8_t held[32];
 } chord_pads_state_t;
 
 static int clamp_int(int value, int min_value, int max_value) {
@@ -87,10 +88,16 @@ static int chord_pads_process_midi(void *instance,
     (void)musical_context;
     chord_pads_state_t *state = (chord_pads_state_t *)instance;
     if (!state || !event || !result) return 0;
-    if ((event->status & 0xF0) != 0x90 || event->data2 == 0) return 0;
+    uint8_t type = event->status & 0xF0;
+    int is_note_on = (type == 0x90 && event->data2 > 0);
+    int is_note_off = (type == 0x80 || (type == 0x90 && event->data2 == 0));
+    if (!is_note_on && !is_note_off) return 0;
     if (event->data1 < 68 || event->data1 > 99) return 0;
 
     int pad = event->data1 - 68;
+    state->held[pad] = is_note_on ? 1 : 0;
+    if (is_note_off) return 1;
+
     int degree = pad % 7;
     int pad_octave = pad / 7;
     int base = 60 + state->octave * 12 + state->root + pad_octave * 12;
@@ -125,13 +132,32 @@ static int chord_pads_process_button(void *instance,
     return handled;
 }
 
+static int chord_pads_update_leds(void *instance,
+                                  const schwung_input_module_musical_context_t *musical_context,
+                                  schwung_input_module_result_t *result) {
+    (void)musical_context;
+    chord_pads_state_t *state = (chord_pads_state_t *)instance;
+    if (!state || !result) return 0;
+    for (int i = 0; i < 32 && result->light_count < SCHWUNG_INPUT_MODULE_MAX_PACKET_OUT; i++) {
+        int degree = i % 7;
+        uint8_t color = state->held[i] ? 127 : (degree == 0 ? 122 : 36);
+        uint8_t *pkt = result->light_packets[result->light_count++];
+        pkt[0] = 0x09;
+        pkt[1] = 0x90;
+        pkt[2] = (uint8_t)(68 + i);
+        pkt[3] = color;
+    }
+    return 1;
+}
+
 static schwung_input_module_api_v1_t api = {
     .api_version = SCHWUNG_INPUT_MODULE_API_VERSION,
     .create = chord_pads_create,
     .destroy = chord_pads_destroy,
     .set_param = chord_pads_set_param,
     .process_midi = chord_pads_process_midi,
-    .process_button = chord_pads_process_button
+    .process_button = chord_pads_process_button,
+    .update_leds = chord_pads_update_leds
 };
 
 schwung_input_module_api_v1_t *schwung_input_module_init_v1(void) {

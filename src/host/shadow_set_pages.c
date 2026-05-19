@@ -36,6 +36,7 @@ char sampler_current_set_uuid[64] = "";       /* UUID from Sets/<UUID>/<Name>/ p
 int sampler_last_song_index = -1;             /* last seen currentSongIndex */
 int sampler_pending_song_index = -1;          /* unresolved currentSongIndex without UUID dir yet */
 uint32_t sampler_pending_set_seq = 0;         /* synthetic pending-set UUID sequence */
+volatile uint32_t shadow_set_loaded_generation = 0;  /* increments when active set changes */
 
 /* Xattr names to preserve when stashing/restoring set UUID dirs */
 static const char *set_page_xattr_names[] = {
@@ -505,6 +506,7 @@ void shadow_handle_set_loaded(const char *set_name, const char *uuid) {
     if (uuid) {
         snprintf(sampler_current_set_uuid, sizeof(sampler_current_set_uuid), "%s", uuid);
     }
+    shadow_set_loaded_generation++;
     shadow_refresh_set_musical_context(set_name, uuid);
 
     /* Signal shadow UI to handle ALL file I/O (active_set.txt, config,

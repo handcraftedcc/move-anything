@@ -52,6 +52,9 @@ typedef struct schwung_input_module_api_v1 {
                           const schwung_input_module_event_t *event,
                           const schwung_input_module_musical_context_t *musical_context,
                           schwung_input_module_result_t *result);
+    int (*update_leds)(void *instance,
+                       const schwung_input_module_musical_context_t *musical_context,
+                       schwung_input_module_result_t *result);
 } schwung_input_module_api_v1_t;
 
 typedef schwung_input_module_api_v1_t *(*schwung_input_module_init_v1_fn)(void);

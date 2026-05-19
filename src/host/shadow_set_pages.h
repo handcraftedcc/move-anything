@@ -62,6 +62,7 @@ extern char sampler_current_set_uuid[64];
 extern int sampler_last_song_index;
 extern int sampler_pending_song_index;
 extern uint32_t sampler_pending_set_seq;
+extern volatile uint32_t shadow_set_loaded_generation;
 
 /* ============================================================================
  * Public functions

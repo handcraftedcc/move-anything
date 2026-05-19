@@ -147,6 +147,28 @@ static void apply_config_to_module(schwung_input_mode_track_config_t *track) {
     module_set_int_param(track, "index_3", track->config.index_3);
 }
 
+static int append_led_update(schwung_input_mode_track_config_t *track,
+                             schwung_input_mode_result_t *result) {
+    if (!track || !track->module.api || !track->module.api->update_leds || !result) return 0;
+    schwung_input_mode_result_t led_result;
+    schwung_input_mode_result_clear(&led_result);
+    if (!track->module.api->update_leds(track->module.instance, NULL, &led_result)) return 0;
+    for (int i = 0; i < led_result.light_count &&
+                    result->light_count < SCHWUNG_INPUT_MODULE_MAX_PACKET_OUT; i++) {
+        memcpy(result->light_packets[result->light_count++], led_result.light_packets[i], 4);
+    }
+    return led_result.light_count > 0 ? 1 : 0;
+}
+
+static void append_module_light_packets(schwung_input_mode_result_t *result,
+                                        const schwung_input_mode_result_t *module_result) {
+    if (!result || !module_result) return;
+    for (int i = 0; i < module_result->light_count &&
+                    result->light_count < SCHWUNG_INPUT_MODULE_MAX_PACKET_OUT; i++) {
+        memcpy(result->light_packets[result->light_count++], module_result->light_packets[i], 4);
+    }
+}
+
 static int color_value_at(const int *pad_colors, int idx) {
     if (!pad_colors || idx < 0 || idx >= SCHWUNG_INPUT_MODE_PADS) return 0;
     return pad_colors[idx] > 0 ? pad_colors[idx] : 0;
@@ -180,6 +202,48 @@ static int add_unique_color(int *colors, int *count, int max_count, int color) {
     return 1;
 }
 
+static int drum_bank_matches(const int pad_colors[SCHWUNG_INPUT_MODE_PADS],
+                             const uint8_t held_pads[SCHWUNG_INPUT_MODE_PADS],
+                             const int *indices,
+                             int count) {
+    int considered = 0;
+    int painted = 0;
+    int classes[8] = {0};
+    int class_counts[8] = {0};
+    int class_count = 0;
+    int dominant_count = 0;
+
+    for (int i = 0; i < count; i++) {
+        int idx = indices[i];
+        if (idx < 0 || idx >= SCHWUNG_INPUT_MODE_PADS) continue;
+        if (pad_is_held(held_pads, idx)) continue;
+        considered++;
+        int color = color_value_at(pad_colors, idx);
+        if (color_is_off(color)) continue;
+        painted++;
+        int hue = color_hue(color);
+        int seen = 0;
+        for (int j = 0; j < class_count; j++) {
+            if (classes[j] == hue) {
+                class_counts[j]++;
+                if (class_counts[j] > dominant_count) dominant_count = class_counts[j];
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen && class_count < (int)(sizeof(classes) / sizeof(classes[0]))) {
+            classes[class_count] = hue;
+            class_counts[class_count] = 1;
+            if (dominant_count < 1) dominant_count = 1;
+            class_count++;
+        }
+    }
+
+    return considered >= 12 &&
+           painted >= considered - 1 &&
+           dominant_count >= considered - 1;
+}
+
 schwung_input_led_grid_mode_t schwung_input_mode_detect_led_grid_mode(const int pad_colors[SCHWUNG_INPUT_MODE_PADS],
                                                                       const uint8_t held_pads[SCHWUNG_INPUT_MODE_PADS]) {
     if (!pad_colors) return SCHWUNG_INPUT_LED_GRID_UNKNOWN_NON_NOTE;
@@ -195,6 +259,10 @@ schwung_input_led_grid_mode_t schwung_input_mode_detect_led_grid_mode(const int 
     int left_half_grey_count = 0;
     int left_half_hues[4] = {0};
     int left_half_hue_count = 0;
+    int left_half_color_classes[8] = {0};
+    int left_half_color_counts[8] = {0};
+    int left_half_color_class_count = 0;
+    int left_half_dominant_count = 0;
 
     for (int row = 0; row < 4; row++) {
         int row_hue = 0;
@@ -211,13 +279,33 @@ schwung_input_led_grid_mode_t schwung_input_mode_detect_led_grid_mode(const int 
             row_painted_count[row]++;
             if (col < 4) left_half_painted++;
 
+            int hue = color_hue(color);
+            if (col < 4) {
+                int seen = 0;
+                for (int i = 0; i < left_half_color_class_count; i++) {
+                    if (left_half_color_classes[i] == hue) {
+                        left_half_color_counts[i]++;
+                        if (left_half_color_counts[i] > left_half_dominant_count) {
+                            left_half_dominant_count = left_half_color_counts[i];
+                        }
+                        seen = 1;
+                        break;
+                    }
+                }
+                if (!seen && left_half_color_class_count < (int)(sizeof(left_half_color_classes) / sizeof(left_half_color_classes[0]))) {
+                    left_half_color_classes[left_half_color_class_count] = hue;
+                    left_half_color_counts[left_half_color_class_count] = 1;
+                    if (left_half_dominant_count < 1) left_half_dominant_count = 1;
+                    left_half_color_class_count++;
+                }
+            }
+
             if (color_is_grey(color)) {
                 grey_count++;
                 if (col < 4) left_half_grey_count++;
                 continue;
             }
 
-            int hue = color_hue(color);
             add_unique_color(non_grey_hues, &non_grey_hue_count,
                              (int)(sizeof(non_grey_hues) / sizeof(non_grey_hues[0])),
                              hue);
@@ -249,6 +337,21 @@ schwung_input_led_grid_mode_t schwung_input_mode_detect_led_grid_mode(const int 
     }
 
     if (non_grey_hue_count > 4) return SCHWUNG_INPUT_LED_GRID_SET;
+
+    static const int physical_left_4x4[] = {
+        0, 1, 2, 3,
+        8, 9, 10, 11,
+        16, 17, 18, 19,
+        24, 25, 26, 27
+    };
+    static const int contiguous_low_16[] = {
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9, 10, 11, 12, 13, 14, 15
+    };
+    if (drum_bank_matches(pad_colors, held_pads, physical_left_4x4, 16) ||
+        drum_bank_matches(pad_colors, held_pads, contiguous_low_16, 16)) {
+        return SCHWUNG_INPUT_LED_GRID_NOTE;
+    }
 
     if (left_half_considered >= 12 &&
         left_half_painted == left_half_considered &&
@@ -323,6 +426,25 @@ void schwung_input_mode_set_modules_root(schwung_input_mode_state_t *state,
     snprintf(state->modules_root, sizeof(state->modules_root), "%s", modules_root);
 }
 
+void schwung_input_mode_merge_led_grid(const int raw_colors[SCHWUNG_INPUT_MODE_PADS],
+                                       int native_colors[SCHWUNG_INPUT_MODE_PADS],
+                                       uint8_t native_valid[SCHWUNG_INPUT_MODE_PADS],
+                                       const int custom_colors[SCHWUNG_INPUT_MODE_PADS],
+                                       const uint8_t custom_valid[SCHWUNG_INPUT_MODE_PADS],
+                                       int out_colors[SCHWUNG_INPUT_MODE_PADS]) {
+    if (!raw_colors || !native_colors || !native_valid || !custom_colors || !custom_valid || !out_colors) return;
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+        int raw = raw_colors[i] >= 0 ? raw_colors[i] : 0;
+        if (custom_valid[i] && raw == custom_colors[i]) {
+            out_colors[i] = native_valid[i] ? native_colors[i] : 0;
+        } else {
+            native_colors[i] = raw;
+            native_valid[i] = 1;
+            out_colors[i] = raw;
+        }
+    }
+}
+
 int schwung_input_mode_panic_track(schwung_input_mode_state_t *state,
                                    int track,
                                    schwung_input_mode_result_t *result) {
@@ -333,6 +455,20 @@ int schwung_input_mode_panic_track(schwung_input_mode_state_t *state,
     for (int pad = 0; pad < SCHWUNG_INPUT_MODE_PADS; pad++) {
         schwung_input_mode_held_pad_t *held = &state->held[track][pad];
         if (!held->active) continue;
+        if (state->tracks[track].module.api && state->tracks[track].module.api->process_midi) {
+            schwung_input_module_event_t event = {
+                .active_track = track,
+                .channel = held->channel,
+                .cin = 0x08,
+                .status = (uint8_t)(0x80 | (held->channel & 0x0F)),
+                .data1 = (uint8_t)(68 + pad),
+                .data2 = 0
+            };
+            schwung_input_mode_result_t ignored;
+            schwung_input_mode_result_clear(&ignored);
+            state->tracks[track].module.api->process_midi(
+                state->tracks[track].module.instance, &event, NULL, &ignored);
+        }
         for (int i = 0; i < held->count && i < (int)sizeof(held->notes); i++) {
             emitted += append_note_off(result, held->channel, held->notes[i]) ? 1 : 0;
         }
@@ -380,6 +516,9 @@ int schwung_input_mode_set_track_module(schwung_input_mode_state_t *state,
         memset(state->tracks[track].param_values, 0, sizeof(state->tracks[track].param_values));
     }
     load_track_module(state, track, module_id);
+    if (state->tracks[track].mode != SCHWUNG_INPUT_MODE_NATIVE) {
+        append_led_update(&state->tracks[track], result);
+    }
     return emitted;
 }
 
@@ -411,7 +550,19 @@ int schwung_input_mode_set_track_param(schwung_input_mode_state_t *state,
     snprintf(track_config->param_keys[slot], sizeof(track_config->param_keys[slot]), "%s", key);
     snprintf(track_config->param_values[slot], sizeof(track_config->param_values[slot]), "%s", value);
     track_config->module.api->set_param(track_config->module.instance, key, value);
+    if (track_config->mode != SCHWUNG_INPUT_MODE_NATIVE) {
+        append_led_update(track_config, result);
+    }
     return emitted;
+}
+
+int schwung_input_mode_update_leds(schwung_input_mode_state_t *state,
+                                   int track,
+                                   schwung_input_mode_result_t *result) {
+    if (result) schwung_input_mode_result_clear(result);
+    if (!state || !valid_track(track)) return 0;
+    if (state->tracks[track].mode == SCHWUNG_INPUT_MODE_NATIVE) return 0;
+    return append_led_update(&state->tracks[track], result);
 }
 
 int schwung_input_mode_set_track_config(schwung_input_mode_state_t *state,
@@ -429,6 +580,9 @@ int schwung_input_mode_set_track_config(schwung_input_mode_state_t *state,
     }
     state->tracks[track].config = next;
     apply_config_to_module(&state->tracks[track]);
+    if (state->tracks[track].mode != SCHWUNG_INPUT_MODE_NATIVE) {
+        append_led_update(&state->tracks[track], result);
+    }
     return emitted;
 }
 
@@ -476,6 +630,7 @@ int schwung_input_mode_handle_button(schwung_input_mode_state_t *state,
                                            module_result.param_updates[i].value,
                                            NULL);
     }
+    append_led_update(track, result);
     return 1;
 }
 
@@ -529,6 +684,7 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
         held->count = (uint8_t)note_count;
         memcpy(held->notes, mapped_notes, (size_t)note_count);
         held->channel = channel;
+        append_led_update(&state->tracks[active_track], result);
         return 1;
     }
 
@@ -538,5 +694,20 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
         }
         memset(held, 0, sizeof(*held));
     }
+    schwung_input_module_event_t event = {
+        .active_track = active_track,
+        .channel = channel,
+        .cin = cin,
+        .status = status,
+        .data1 = data1,
+        .data2 = data2
+    };
+    schwung_input_mode_result_t module_result;
+    schwung_input_mode_result_clear(&module_result);
+    if (state->tracks[active_track].module.api->process_midi(
+            state->tracks[active_track].module.instance, &event, NULL, &module_result)) {
+        append_module_light_packets(result, &module_result);
+    }
+    append_led_update(&state->tracks[active_track], result);
     return 1;
 }

@@ -257,9 +257,9 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_fd_trace.c src/host/shadow_state.c \
-    src/host/shadow_midi.c src/host/input_mode.c src/host/unified_log.c \
+    src/host/shadow_midi.c src/host/input_mode.c src/host/sentry_mode.c src/host/unified_log.c \
     $SHIM_TTS_SRC \
-    src/host/shadow_constants.h src/host/shadow_midi.h src/host/input_mode.h src/host/input_mode_api_v1.h src/host/shadow_sampler.h \
+    src/host/shadow_constants.h src/host/shadow_midi.h src/host/input_mode.h src/host/input_mode_api_v1.h src/host/sentry_mode.h src/host/shadow_sampler.h \
     src/host/shadow_set_pages.h src/host/shadow_dbus.h src/host/shadow_chain_mgmt.h \
     src/host/shadow_chain_types.h src/host/shadow_link_audio.h src/host/shadow_process.h \
     src/host/shadow_resample.h src/host/shadow_overlay.h src/host/shadow_pin_scanner.h \
@@ -286,6 +286,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_state.c \
         src/host/shadow_midi.c \
         src/host/input_mode.c \
+        src/host/sentry_mode.c \
         src/host/unified_log.c \
         $SHIM_TTS_SRC \
         $SHIM_DEFINES \

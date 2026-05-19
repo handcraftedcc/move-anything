@@ -215,7 +215,7 @@ shadow_set_input_track_param(track, index, key, value)
 shadow_set_input_track_config(track, root, scale, octave, root_octave, index_2, index_3)
 shadow_get_input_led_mode(track) / shadow_set_input_led_mode(track, mode)
 shadow_get_set_musical_context() // -> {valid, rootNote, scale, melodicLayout}
-// Runtime pad remapping is gated by the shim's navigation-triggered pad-LED classifier.
+// Runtime pad remapping is gated by the shim's Sentry MainMode watcher.
 
 // Display control
 host_flush_display()          // Force immediate display update

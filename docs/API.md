@@ -371,7 +371,11 @@ The Shadow UI resolves each module's `chain_params`, writes the selected module 
 
 Input modes are saved per set in `input_modes.json`. See [INPUT_MODES.md](INPUT_MODES.md) for the user workflow and persistence format.
 
-The shim only overrides pad input when Move's pad LED grid is classified as a playable Note layout. The classifier is sampled after native navigation gestures that repaint the pads, ignores currently held pads, accepts note/chromatic/drum LED patterns, and fails closed for track/set/navigation layouts. `shadow_get_move_ui_mode()` is updated from this inference for diagnostics, but input remapping is gated by the LED classifier.
+The shim only overrides pad input when Move's native Sentry breadcrumbs report `Set MainMode (new state: note)`. A background watcher reads the latest breadcrumb file under `/data/UserData/Sentry` and publishes a cached mode to the real-time SPI path. `session`, `songOverview`, and unknown modes fail closed and pass pads through unchanged. `shadow_get_move_ui_mode()` mirrors the cached Sentry mode for diagnostics.
+
+Input modules can return one-shot LED packets from MIDI/button handling and can implement `update_leds()` to redraw their current pad layout after selection, parameter changes, pad note state changes, or a return to Note mode. The shim only forwards those LED packets while pad overrides are allowed. It also tracks Schwung's custom LED writes separately from Move's native LED cache. While a custom pad LED is active in Note mode, Move-originated pad LED packets for that pad still update the native LED cache, but are suppressed before they reach hardware. When Sentry reports that Move left Note mode, pending custom pad LED writes are cleared and the latest cached native pad LEDs are queued as a handoff batch.
+
+On active-set changes, runtime input module instances and custom pad LED ownership are cleared immediately. Overrides remain suspended until the Shadow UI finishes loading the new set's input mode state and clears `SHADOW_UI_FLAG_SET_CHANGED`.
 
 Modules can read the active set's musical context with `shadow_get_set_musical_context()`. The values come from the current set file's `rootNote`, `scale`, and `melodicLayout` fields when available:
 

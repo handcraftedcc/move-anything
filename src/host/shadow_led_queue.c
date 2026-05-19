@@ -164,6 +164,51 @@ void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2)
     }
 }
 
+void led_queue_clear_pending_pad_leds(void) {
+    shadow_init_led_queue();
+    for (int note = 68; note <= 99; note++) {
+        shadow_pending_note_color[note] = -1;
+        shadow_pending_note_status[note] = 0;
+        shadow_pending_note_cin[note] = 0;
+    }
+}
+
+void led_queue_queue_pad_leds_off(void) {
+    shadow_init_led_queue();
+    for (int note = 68; note <= 99; note++) {
+        shadow_pending_note_color[note] = 0;
+        shadow_pending_note_status[note] = 0x90;
+        shadow_pending_note_cin[note] = 0x09;
+    }
+}
+
+void led_queue_queue_native_pad_leds(void) {
+    shadow_init_led_queue();
+    for (int note = 68; note <= 99; note++) {
+        if (move_note_led_state[note] >= 0) {
+            shadow_pending_note_color[note] = move_note_led_state[note];
+            shadow_pending_note_status[note] = move_note_led_status[note] ? move_note_led_status[note] : 0x90;
+            shadow_pending_note_cin[note] = move_note_led_cin[note] ? move_note_led_cin[note] : 0x09;
+        } else {
+            shadow_pending_note_color[note] = 0;
+            shadow_pending_note_status[note] = 0x90;
+            shadow_pending_note_cin[note] = 0x09;
+        }
+    }
+}
+
+static int midi_out_has_note_led_packet(const uint8_t *midi_out, uint8_t note) {
+    if (!midi_out) return 0;
+    for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
+        uint8_t cable = (midi_out[s] >> 4) & 0x0F;
+        uint8_t type = midi_out[s+1] & 0xF0;
+        if (cable == 0 && (type == 0x90 || type == 0x80) && midi_out[s+2] == note) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Queue all-off for only the real hardware LEDs */
 static void queue_hw_leds_off(void) {
     shadow_init_led_queue();
@@ -236,23 +281,31 @@ void shadow_clear_move_leds_if_overtake(void) {
         for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
             uint8_t cable = (midi_out[i] >> 4) & 0x0F;
             uint8_t type = midi_out[i+1] & 0xF0;
-            if (cable == 0 && (type == 0x90 || type == 0xB0)) {
+            if (cable == 0 && (type == 0x90 || type == 0x80 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
-	                if (type == 0x90) {
-	                    if (d1 >= 68 && d1 <= 99) {
-	                        move_pad_led_generation++;
-	                        LOG_INFO("input_mode_led",
-	                                 "led out note=%u color=%u old=%d",
-	                                 d1, d2, move_note_led_state[d1]);
-	                    }
-	                    move_note_led_state[d1] = d2;
-	                    move_note_led_status[d1] = midi_out[i+1];
-	                    move_note_led_cin[d1] = midi_out[i];
+                if (type == 0x90 || type == 0x80) {
+                    int color = type == 0x80 ? 0 : d2;
+                    if (d1 >= 68 && d1 <= 99) {
+                        move_pad_led_generation++;
+                        LOG_INFO("input_mode_led",
+                                 "led out note=%u color=%u old=%d",
+                                 d1, color, move_note_led_state[d1]);
+                    }
+                    move_note_led_state[d1] = color;
+                    move_note_led_status[d1] = midi_out[i+1];
+                    move_note_led_cin[d1] = midi_out[i];
                 } else {
                     move_cc_led_state[d1] = d2;
                     move_cc_led_status[d1] = midi_out[i+1];
                     move_cc_led_cin[d1] = midi_out[i];
+                }
+                if (host.suppress_move_led &&
+                    host.suppress_move_led(midi_out[i], midi_out[i+1], d1, d2)) {
+                    midi_out[i] = 0;
+                    midi_out[i+1] = 0;
+                    midi_out[i+2] = 0;
+                    midi_out[i+3] = 0;
                 }
             }
         }
@@ -319,7 +372,7 @@ void shadow_clear_move_leds_if_overtake(void) {
         uint8_t cable = (midi_out[i] >> 4) & 0x0F;
         uint8_t type = midi_out[i+1] & 0xF0;
         if (cable != 0) continue;
-        if (type == 0x90) {
+        if (type == 0x90 || type == 0x80) {
             /* Note LEDs (pads) — always cleared; no passthrough list. */
             midi_out[i] = 0;
             midi_out[i+1] = 0;
@@ -381,6 +434,11 @@ void shadow_flush_pending_leds(void) {
     int notes_remaining = 0;
     for (int i = 0; i < 128 && sent < budget; i++) {
         if (shadow_pending_note_color[i] >= 0) {
+            if (i >= 68 && i <= 99 && shadow_pending_note_color[i] == 0 &&
+                midi_out_has_note_led_packet(midi_out, (uint8_t)i)) {
+                shadow_pending_note_color[i] = -1;
+                continue;
+            }
             int slot = -1;
             /* When skip_led_clear is active, first try to replace Move's
              * existing packet for the same note (buffer may be full). */
@@ -819,7 +877,6 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
     if (!midi_out) return 0;
 
     /* Clear any cable-0 sysex packets already in the buffer. */
-    int cleared = 0;
     for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
         uint8_t cin_type = midi_out[s] & 0x0F;
         uint8_t cable = (midi_out[s] >> 4) & 0x0F;
@@ -828,7 +885,6 @@ int led_queue_flush_jack_sysex_restore(int max_leds) {
             midi_out[s+1] = 0;
             midi_out[s+2] = 0;
             midi_out[s+3] = 0;
-            cleared++;
         }
     }
 

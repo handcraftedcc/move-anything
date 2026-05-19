@@ -33,6 +33,9 @@ typedef struct {
      * Move firmware during overtake (MIDI_OUT CC packets with this d1 are
      * left untouched so Move's LED writes reach hardware). */
     const uint8_t *passthrough_ccs;
+    /* Optional: return non-zero to block a Move-originated LED packet from
+     * the hardware output buffer after it has updated the native LED cache. */
+    int (*suppress_move_led)(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2);
 } led_queue_host_t;
 
 /* ============================================================================
@@ -65,6 +68,10 @@ void shadow_flush_pending_input_leds(void);
 int led_queue_get_note_led_color(int note);
 uint32_t led_queue_get_pad_led_generation(void);
 void led_queue_clear_pad_led_cache(void);
+void led_queue_clear_pending_pad_leds(void);
+void led_queue_queue_pad_leds_off(void);
+/* Queue the latest cached Move-native pad LEDs, or off for unknown pads. */
+void led_queue_queue_native_pad_leds(void);
 
 /* JACK LED cache — track LED state from JACK MIDI output (note/CC) */
 void led_queue_cache_jack_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2);

@@ -108,6 +108,15 @@ int schwung_input_mode_set_track_param(schwung_input_mode_state_t *state,
                                        const char *key,
                                        const char *value,
                                        schwung_input_mode_result_t *result);
+int schwung_input_mode_update_leds(schwung_input_mode_state_t *state,
+                                   int track,
+                                   schwung_input_mode_result_t *result);
+void schwung_input_mode_merge_led_grid(const int raw_colors[SCHWUNG_INPUT_MODE_PADS],
+                                       int native_colors[SCHWUNG_INPUT_MODE_PADS],
+                                       uint8_t native_valid[SCHWUNG_INPUT_MODE_PADS],
+                                       const int custom_colors[SCHWUNG_INPUT_MODE_PADS],
+                                       const uint8_t custom_valid[SCHWUNG_INPUT_MODE_PADS],
+                                       int out_colors[SCHWUNG_INPUT_MODE_PADS]);
 int schwung_input_mode_set_track_config(schwung_input_mode_state_t *state,
                                         int track,
                                         const schwung_input_mode_config_t *config,

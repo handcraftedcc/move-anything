@@ -26,6 +26,23 @@ static void expect_packet(const schwung_input_mode_result_t *result,
     }
 }
 
+static void expect_light(const schwung_input_mode_result_t *result,
+                         int index,
+                         uint8_t b0,
+                         uint8_t b1,
+                         uint8_t b2,
+                         uint8_t b3,
+                         const char *label) {
+    if (index >= result->light_count) fail(label);
+    const uint8_t *pkt = result->light_packets[index];
+    if (pkt[0] != b0 || pkt[1] != b1 || pkt[2] != b2 || pkt[3] != b3) {
+        fprintf(stderr,
+                "FAIL: %s: got light %02x %02x %02x %02x, expected %02x %02x %02x %02x\n",
+                label, pkt[0], pkt[1], pkt[2], pkt[3], b0, b1, b2, b3);
+        exit(1);
+    }
+}
+
 static void expect_led_class(const int colors[SCHWUNG_INPUT_MODE_PADS],
                              const uint8_t held[SCHWUNG_INPUT_MODE_PADS],
                              schwung_input_view_class_t expected,
@@ -84,6 +101,39 @@ static void test_led_grid_classifier(void) {
     }
     expect_led_class(colors, held, SCHWUNG_INPUT_VIEW_PLAY, "drum left-half grid is playable");
     expect_led_mode(colors, held, SCHWUNG_INPUT_LED_GRID_NOTE, "drum left-half grid is note mode");
+
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+        int col = i % 8;
+        colors[i] = col < 4 ? 68 : 0;
+        held[i] = 0;
+    }
+    colors[0] = 127;
+    expect_led_class(colors, held, SCHWUNG_INPUT_VIEW_PLAY,
+                     "drum left 4x4 with one pressed-color pad is playable");
+    expect_led_mode(colors, held, SCHWUNG_INPUT_LED_GRID_NOTE,
+                    "drum left 4x4 with one pressed-color pad is note mode");
+
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+        int col = i % 8;
+        colors[i] = col < 4 ? 68 : 0;
+        held[i] = 0;
+    }
+    colors[0] = 127;
+    held[0] = 1;
+    expect_led_class(colors, held, SCHWUNG_INPUT_VIEW_PLAY,
+                     "drum left 4x4 ignores held pressed pad");
+    expect_led_mode(colors, held, SCHWUNG_INPUT_LED_GRID_NOTE,
+                    "drum left 4x4 ignores held pressed pad for note mode");
+
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+        colors[i] = i < 16 ? 68 : 0;
+        held[i] = 0;
+    }
+    colors[0] = 127;
+    expect_led_class(colors, held, SCHWUNG_INPUT_VIEW_PLAY,
+                     "drum contiguous 16-pad bank with one pressed-color pad is playable");
+    expect_led_mode(colors, held, SCHWUNG_INPUT_LED_GRID_NOTE,
+                    "drum contiguous 16-pad bank with one pressed-color pad is note mode");
 
     for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
         int row = i / 8;
@@ -223,12 +273,50 @@ static void test_led_grid_classifier(void) {
     expect_led_class(colors, held, SCHWUNG_INPUT_VIEW_PLAY, "held pad colors are ignored");
 }
 
+static void test_custom_led_merge(void) {
+    int raw[SCHWUNG_INPUT_MODE_PADS];
+    int native[SCHWUNG_INPUT_MODE_PADS];
+    int custom[SCHWUNG_INPUT_MODE_PADS];
+    int out[SCHWUNG_INPUT_MODE_PADS];
+    uint8_t native_valid[SCHWUNG_INPUT_MODE_PADS];
+    uint8_t custom_valid[SCHWUNG_INPUT_MODE_PADS];
+
+    for (int i = 0; i < SCHWUNG_INPUT_MODE_PADS; i++) {
+        raw[i] = 20;
+        native[i] = 0;
+        custom[i] = 0;
+        out[i] = 0;
+        native_valid[i] = 0;
+        custom_valid[i] = 0;
+    }
+
+    schwung_input_mode_merge_led_grid(raw, native, native_valid, custom, custom_valid, out);
+    if (out[0] != 20 || native[0] != 20 || native_valid[0] != 1) {
+        fail("merge should capture initial native LED state");
+    }
+
+    custom[0] = 122;
+    custom_valid[0] = 1;
+    raw[0] = 122;
+    schwung_input_mode_merge_led_grid(raw, native, native_valid, custom, custom_valid, out);
+    if (out[0] != 20 || native[0] != 20) {
+        fail("merge should ignore our own custom LED echo");
+    }
+
+    raw[0] = 68;
+    schwung_input_mode_merge_led_grid(raw, native, native_valid, custom, custom_valid, out);
+    if (out[0] != 68 || native[0] != 68) {
+        fail("merge should accept native LED changes that differ from custom writes");
+    }
+}
+
 int main(int argc, char **argv) {
     schwung_input_mode_state_t state;
     schwung_input_mode_result_t result;
     schwung_input_mode_config_t config;
 
     test_led_grid_classifier();
+    test_custom_led_merge();
 
     schwung_input_mode_init(&state);
     if (argc > 1) {
@@ -295,6 +383,7 @@ int main(int argc, char **argv) {
     memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 0, SCHWUNG_INPUT_MODE_DRUM32, &result);
     schwung_input_mode_set_track_module(&state, 0, "drum32", &result);
+    if (result.light_count != 32) fail("drum32 module should emit custom LED state on selection");
     config = schwung_input_mode_default_config();
     config.root_octave = 1;
     schwung_input_mode_set_track_config(&state, 0, &config, &result);
@@ -357,6 +446,23 @@ int main(int argc, char **argv) {
     expect_packet(&result, 0, 0x29, 0x92, 60, 110, "chord pad 0 emits root");
     expect_packet(&result, 1, 0x29, 0x92, 64, 110, "chord pad 0 emits third");
     expect_packet(&result, 2, 0x29, 0x92, 67, 110, "chord pad 0 emits fifth");
+    if (result.light_count != 32) fail("chord pad note-on should redraw custom LEDs");
+    expect_light(&result, 0, 0x09, 0x90, 68, 127, "pressed chord root pad should be highlighted");
+    expect_light(&result, 1, 0x09, 0x90, 69, 36, "non-root chord pad should use normal color");
+    expect_light(&result, 7, 0x09, 0x90, 75, 122, "next root chord pad should use root color");
+
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 2, 0x08, 0x82, 68, 0, &result)) {
+        fail("chord pads should block pad note-off");
+    }
+    if (result.count != 3) fail("chord pad note-off should release three notes");
+    if (result.light_count != 32) fail("chord pad note-off should redraw custom LEDs");
+    expect_light(&result, 0, 0x09, 0x90, 68, 122, "released chord root pad should restore root color");
+
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 2, 0x09, 0x92, 68, 110, &result)) {
+        fail("chord pads should block pad note-on before octave test");
+    }
 
     memset(&result, 0, sizeof(result));
     if (!schwung_input_mode_handle_button(&state, 2, 0x0B, 0xB2, 54, 127, &result)) {
@@ -367,6 +473,8 @@ int main(int argc, char **argv) {
         fail("minus button should report updated chord octave param");
     }
     if (result.count != 3) fail("octave button should panic held chord notes before shifting");
+    if (result.light_count != 32) fail("octave button should redraw custom LEDs after shifting");
+    expect_light(&result, 0, 0x09, 0x90, 68, 122, "octave panic should clear pressed chord pad highlight");
     expect_packet(&result, 0, 0x28, 0x82, 60, 0, "chord octave shift panics root");
     expect_packet(&result, 1, 0x28, 0x82, 64, 0, "chord octave shift panics third");
     expect_packet(&result, 2, 0x28, 0x82, 67, 0, "chord octave shift panics fifth");
