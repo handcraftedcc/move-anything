@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define SCHWUNG_INPUT_MODULE_API_VERSION 1
+#define SCHWUNG_INPUT_MODULE_API_VERSION_V2 2
 #define SCHWUNG_INPUT_MODULE_MAX_PACKET_OUT 256
 #define SCHWUNG_INPUT_MODULE_MAX_PARAM_UPDATES 8
 #define SCHWUNG_INPUT_MODULE_PARAM_KEY_LEN 32
@@ -57,6 +58,34 @@ typedef struct schwung_input_module_api_v1 {
                        schwung_input_module_result_t *result);
 } schwung_input_module_api_v1_t;
 
+typedef struct schwung_input_module_api_v2 {
+    uint32_t api_version;
+    void *(*create)(const char *module_dir);
+    void (*destroy)(void *instance);
+    void (*set_param)(void *instance, const char *key, const char *value);
+    int (*process_midi)(void *instance,
+                        const schwung_input_module_event_t *event,
+                        const schwung_input_module_musical_context_t *musical_context,
+                        schwung_input_module_result_t *result);
+    int (*process_button)(void *instance,
+                          const schwung_input_module_event_t *event,
+                          const schwung_input_module_musical_context_t *musical_context,
+                          schwung_input_module_result_t *result);
+    int (*update_leds)(void *instance,
+                       const schwung_input_module_musical_context_t *musical_context,
+                       schwung_input_module_result_t *result);
+    uint32_t struct_size;
+    int (*tick)(void *instance,
+                int frames,
+                int sample_rate,
+                const schwung_input_module_musical_context_t *musical_context,
+                schwung_input_module_result_t *result);
+    int (*panic)(void *instance,
+                 const schwung_input_module_musical_context_t *musical_context,
+                 schwung_input_module_result_t *result);
+} schwung_input_module_api_v2_t;
+
 typedef schwung_input_module_api_v1_t *(*schwung_input_module_init_v1_fn)(void);
+typedef schwung_input_module_api_v2_t *(*schwung_input_module_init_v2_fn)(void);
 
 #endif

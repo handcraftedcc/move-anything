@@ -105,7 +105,9 @@ src/modules/input_modes/
 
 Their `chain_params` entries define the UI used by the Shadow UI. Their real-time mapping lives in each module's bundled `dsp.so`, loaded from `/data/UserData/schwung/modules/input_modes/<module-id>/dsp.so`.
 
-For native input modules, set `dsp` to the shared object filename and use `input_mode.engine: "native_dsp"`. The shared object must export `schwung_input_module_init_v1()` from `src/host/input_mode_api_v1.h`. The API receives raw MIDI/button packets and returns replacement MIDI packets, optional light packets, and optional parameter updates.
+For native input modules, set `dsp` to the shared object filename and use `input_mode.engine: "native_dsp"`. The shared object exports the input module API from `src/host/input_mode_api_v1.h`. Version 1 modules export `schwung_input_module_init_v1()` and receive raw MIDI/button packets, returning replacement MIDI packets, optional light packets, and optional parameter updates.
+
+Modules that own delayed MIDI, note lengths, strums, or other internal voice state should export `schwung_input_module_init_v2()` instead. The v2 API keeps the v1 callbacks and adds optional `tick()` and `panic()` callbacks. `tick()` runs once per audio block while the selected track is in Note mode, so modules can emit delayed notes without core-side hardcoding. `panic()` lets the module release any internally held notes when the user switches modules, switches to Native, or the set changes.
 
 Modules that need custom pad lighting should implement the optional `update_leds()` callback. The host calls it when the module is selected, when parameters change, when pad note state changes, and when the shim re-enters a playable Note layout. The callback fills `light_packets` with the desired 32-pad layout; the shim handles deciding whether it is currently safe to write those packets to Move. The bundled input modules track held pads internally so pressed pads can be highlighted, then restored to root/normal colors on release.
 
@@ -123,6 +125,8 @@ For compatibility with earlier state files, `input_mode.mode` can still be one o
 If a module has a `layout`, `mode`, `host_mode`, or `input_mode` parameter, that saved parameter value takes priority over `input_mode.mode`. This preserves compatibility with early test-state files while one-layout modules activate their MIDI transform as soon as they are selected.
 
 For compatibility with simple module ids, `true-chromatic`, `32-drum-pads`, `drum-pads`, and `chord-pads` are accepted aliases for the same built-in layouts.
+
+External input modules do not need to map themselves to one of those legacy layout values. Selecting any loaded non-legacy input module is enough to activate its DSP transform; the module owns its mapping logic.
 
 The current set's musical context is also mirrored into shared memory for future input modules:
 

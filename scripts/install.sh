@@ -1191,6 +1191,7 @@ BEGIN { id=""; name=""; repo=""; asset=""; ctype="" }
     if (ctype == "sound_generator") subdir = "sound_generators"
     else if (ctype == "audio_fx") subdir = "audio_fx"
     else if (ctype == "midi_fx") subdir = "midi_fx"
+    else if (ctype == "input_mode") subdir = "input_modes"
     else if (ctype == "utility") subdir = "utilities"
     else if (ctype == "overtake") subdir = "overtake"
     else if (ctype == "tool") subdir = "tools"

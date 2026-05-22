@@ -118,7 +118,7 @@ static int parse_module_json(const char *module_dir, module_info_t *info) {
         return -1;
     }
 
-    if (len > 8192) {
+    if (len > 65536) {
         printf("mm: module.json too large: %s\n", json_path);
         fclose(f);
         return -1;

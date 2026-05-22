@@ -330,6 +330,56 @@ int main(int argc, char **argv) {
     if (result.count != 0) fail("native mode should not emit MIDI");
 
     memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_set_track_module(&state, 0, "v2-fixture", &result)) {
+        fail("selecting arbitrary v2 module should report LED-only output");
+    }
+    if (result.light_count != 1) fail("arbitrary v2 module should emit LED state when selected");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 0, 0x09, 0x90, 68, 100, &result)) {
+        fail("loaded arbitrary input module should block pad note-on without legacy mode enum");
+    }
+    if (result.count != 1) fail("arbitrary v2 module should emit immediate note-on");
+    expect_packet(&result, 0, 0x29, 0x90, 60, 100, "arbitrary v2 module emits immediate chord note");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_tick(&state, 0, 128, 44100, &result)) {
+        fail("arbitrary v2 module tick should emit delayed note-on");
+    }
+    expect_packet(&result, 0, 0x29, 0x90, 64, 100, "arbitrary v2 module tick emits delayed chord note");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 0, 0x08, 0x80, 68, 0, &result)) {
+        fail("arbitrary v2 module should block pad note-off");
+    }
+    if (result.count != 1) fail("v2 module should own note-off output without core duplicates");
+    expect_packet(&result, 0, 0x28, 0x80, 60, 0, "arbitrary v2 module emits immediate note-off");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_tick(&state, 0, 128, 44100, &result)) {
+        fail("arbitrary v2 module tick should emit delayed note-off");
+    }
+    expect_packet(&result, 0, 0x28, 0x80, 64, 0, "arbitrary v2 module tick emits delayed note-off");
+    memset(&result, 0, sizeof(result));
+    if (schwung_input_mode_tick(&state, 0, 128, 44100, &result)) {
+        fail("idle arbitrary v2 module tick should not emit");
+    }
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 0, 0x09, 0x90, 69, 100, &result)) {
+        fail("arbitrary v2 module should block handled note-on even with no immediate output");
+    }
+    if (result.count != 0) fail("silent v2 note-on should not emit MIDI");
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 0, 0x08, 0x80, 69, 0, &result)) {
+        fail("arbitrary v2 module should block release after silent note-on");
+    }
+    memset(&result, 0, sizeof(result));
+    if (!schwung_input_mode_handle_midi(&state, 0, 0x09, 0x90, 68, 100, &result)) {
+        fail("arbitrary v2 module should block second note-on before panic");
+    }
+    memset(&result, 0, sizeof(result));
+    schwung_input_mode_set_track_module(&state, 0, "native", &result);
+    if (result.count != 2) fail("unloading arbitrary v2 module should call module panic");
+    expect_packet(&result, 0, 0x28, 0x80, 60, 0, "arbitrary v2 panic releases immediate note");
+    expect_packet(&result, 1, 0x28, 0x80, 64, 0, "arbitrary v2 panic releases delayed note");
+
+    memset(&result, 0, sizeof(result));
     schwung_input_mode_set_track_mode(&state, 1, SCHWUNG_INPUT_MODE_TRUE_CHROMATIC_POC, &result);
     schwung_input_mode_set_track_module(&state, 1, "chromatic", &result);
     if (result.count != 0) fail("enabling empty track should not emit panic notes");

@@ -890,10 +890,19 @@ static void shadow_input_mode_sync_control(void)
     shadow_input_mode_ensure_initialized();
     if (!shadow_control) return;
 
+    int active_track = shadow_control->input_active_track;
+    if (active_track < 0 || active_track >= SHADOW_UI_SLOTS) {
+        active_track = shadow_selected_slot;
+    }
+
     for (int i = 0; i < SHADOW_UI_SLOTS; i++) {
         const char *module_id = (const char *)shadow_control->input_track_module_ids[i];
         if (!module_id[0]) module_id = "native";
         if (strcmp(shadow_input_mode_state.tracks[i].module.module_id, module_id) != 0) {
+            int is_active_track = i == active_track;
+            if (is_active_track && shadow_input_mode_led_allows_override) {
+                shadow_input_mode_clear_custom_leds();
+            }
             schwung_input_mode_result_t module_result;
             if (schwung_input_mode_set_track_module(&shadow_input_mode_state, i, module_id, &module_result)) {
                 shadow_input_mode_queue_result(&module_result);
@@ -6076,6 +6085,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         int active_track = shadow_control->input_active_track;
         if (active_track < 0 || active_track >= SHADOW_UI_SLOTS) {
             active_track = shadow_selected_slot;
+        }
+
+        schwung_input_mode_result_t tick_result;
+        if (schwung_input_mode_tick(&shadow_input_mode_state,
+                                    active_track,
+                                    MOVE_FRAMES_PER_BLOCK,
+                                    MOVE_SAMPLE_RATE,
+                                    &tick_result)) {
+            shadow_input_mode_queue_result(&tick_result);
+            shadow_midi_force_defer(2);
         }
 
         for (int j = 0; j < MIDI_BUFFER_SIZE; j += 4) {

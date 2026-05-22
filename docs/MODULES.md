@@ -42,7 +42,7 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 - `api_version`: Use `2` for new modules (supports multiple instances, required for Signal Chain)
 - `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "Dexed", "CLAP")
 - `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
-- Keep `module.json` reasonably small (the loader caps it at 8KB).
+- Keep `module.json` reasonably small (the loader caps it at 64KB).
 - `dsp`: any filename inside the module directory. The host loads whatever path you specify here, so `dsp.so`, `<module-id>.so`, or anything else is fine for standalone modules. **Exception — `audio_fx` modules used inside Signal Chain:** the chain host loads the FX directly as `modules/audio_fx/<id>/<id>.so` (it does not consult the FX's `module.json`), so audio FX shared libraries **must** be named `<module-id>.so`. Sound generators and MIDI sources loaded by the chain are hardcoded to `dsp.so`.
 
 ### Capabilities
@@ -132,7 +132,7 @@ The current core input modules live under `src/modules/input_modes/`:
 
 The real-time mapping lives in each module's bundled native DSP file. `module.json` owns the menu shape and saved parameter values.
 
-Native input modules declare `"dsp": "dsp.so"` and `input_mode.engine: "native_dsp"` in `module.json`. The shared object exports `schwung_input_module_init_v1()` from `src/host/input_mode_api_v1.h`.
+Native input modules declare `"dsp": "dsp.so"` and `input_mode.engine: "native_dsp"` in `module.json`. The shared object exports the input module API from `src/host/input_mode_api_v1.h`. Simple modules can use `schwung_input_module_init_v1()`. Modules that need delayed output or module-owned voice cleanup can use `schwung_input_module_init_v2()`, which adds optional `tick()` and `panic()` callbacks while keeping the same MIDI, button, parameter, and LED result model.
 
 Input modules that need the current set key/scale can use `shadow_get_set_musical_context()` from the Shadow UI runtime. It returns the active set's `rootNote`, `scale`, and `melodicLayout` when those fields were read from `Song.abl`.
 

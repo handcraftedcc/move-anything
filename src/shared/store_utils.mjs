@@ -21,6 +21,7 @@ export const CATEGORIES = [
     { id: 'sound_generator', name: 'Sound Generators' },
     { id: 'audio_fx', name: 'Audio FX' },
     { id: 'midi_fx', name: 'MIDI FX' },
+    { id: 'input_mode', name: 'Input Modes' },
     { id: 'midi_source', name: 'MIDI Sources' },
     { id: 'utility', name: 'Utilities' },
     { id: 'overtake', name: 'Overtake Modules' },
@@ -52,6 +53,7 @@ export function getInstallSubdir(componentType) {
         case 'sound_generator': return 'sound_generators';
         case 'audio_fx': return 'audio_fx';
         case 'midi_fx': return 'midi_fx';
+        case 'input_mode': return 'input_modes';
         case 'utility': return 'utilities';
         case 'overtake': return 'overtake';
         case 'tool': return 'tools';

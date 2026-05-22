@@ -216,6 +216,8 @@ shadow_set_input_track_config(track, root, scale, octave, root_octave, index_2, 
 shadow_get_input_led_mode(track) / shadow_set_input_led_mode(track, mode)
 shadow_get_set_musical_context() // -> {valid, rootNote, scale, melodicLayout}
 // Runtime pad remapping is gated by the shim's Sentry MainMode watcher.
+// Input module API v2 adds optional tick() and panic() callbacks for
+// delayed note output and module-owned voice cleanup.
 
 // Display control
 host_flush_display()          // Force immediate display update

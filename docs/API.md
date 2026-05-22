@@ -241,6 +241,9 @@ shadow_set_input_track_param(track, index, key, value)
 shadow_set_input_track_config(track, root, scale, octave, root_octave, index_2, index_3)
 shadow_get_input_led_mode(track) / shadow_set_input_led_mode(track, mode)
 shadow_get_set_musical_context() // -> {valid, rootNote, scale, melodicLayout}
+// Native input modules use src/host/input_mode_api_v1.h. API v2 adds
+// optional per-block tick() and panic() callbacks for delayed notes and
+// module-owned voice cleanup.
 shadow_get_suspend_overtake() / shadow_set_suspend_overtake(v)
 shadow_set_overtake_mode(mode)
 shadow_set_skip_led_clear(v)

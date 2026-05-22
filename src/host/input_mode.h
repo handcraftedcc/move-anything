@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     void *handle;
     const schwung_input_module_api_v1_t *api;
+    const schwung_input_module_api_v2_t *api_v2;
     void *instance;
     char module_id[SCHWUNG_INPUT_MODE_MODULE_ID_LEN];
     char module_dir[SCHWUNG_INPUT_MODE_MODULE_ROOT_LEN];
@@ -138,5 +139,10 @@ int schwung_input_mode_handle_midi(schwung_input_mode_state_t *state,
                                    uint8_t data1,
                                    uint8_t data2,
                                    schwung_input_mode_result_t *result);
+int schwung_input_mode_tick(schwung_input_mode_state_t *state,
+                            int active_track,
+                            int frames,
+                            int sample_rate,
+                            schwung_input_mode_result_t *result);
 
 #endif

@@ -614,10 +614,32 @@ function normalizeInputModeModuleId(moduleId, params) {
     return moduleId || "native";
 }
 
+function paramsFromUiHierarchy(hierarchy) {
+    const root = hierarchy && hierarchy.levels && hierarchy.levels.root;
+    return root && Array.isArray(root.params) ? root.params : [];
+}
+
+function loadInputModeModuleMetadata(moduleId) {
+    if (!moduleId || moduleId === "native") return null;
+    try {
+        const raw = std.loadFile(`${MODULES_ROOT}/input_modes/${moduleId}/module.json`);
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+        if (typeof host_get_module_metadata === "function") {
+            try { return host_get_module_metadata(moduleId); } catch (err) { return null; }
+        }
+    }
+    return null;
+}
+
 function getInputModeParams(module) {
     if (!module) return [];
     if (Array.isArray(module.chain_params)) return module.chain_params;
     if (module.input_mode && Array.isArray(module.input_mode.params)) return module.input_mode.params;
+    const topLevelHierarchyParams = paramsFromUiHierarchy(module.ui_hierarchy);
+    if (topLevelHierarchyParams.length > 0) return topLevelHierarchyParams;
+    const capabilityHierarchyParams = paramsFromUiHierarchy(module.capabilities && module.capabilities.ui_hierarchy);
+    if (capabilityHierarchyParams.length > 0) return capabilityHierarchyParams;
     return [];
 }
 
@@ -662,10 +684,7 @@ function refreshInputModeModules() {
             for (const mod of modules) {
                 if (!mod || mod.component_type !== "input_mode") continue;
                 if (mod.id === LEGACY_INPUT_MODE_TEST_MODULE) continue;
-                let meta = null;
-                if (typeof host_get_module_metadata === "function") {
-                    try { meta = host_get_module_metadata(mod.id); } catch (e) { meta = null; }
-                }
+                const meta = loadInputModeModuleMetadata(mod.id);
                 discovered.push(Object.assign({}, mod, meta || {}, {
                     id: mod.id,
                     name: (meta && meta.name) || mod.name || mod.id
